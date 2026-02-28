@@ -50,6 +50,11 @@
     {:blocks [block]
      :proof  next-private-key}))
 
+(defn sealed?
+  "Returns true if the token is sealed (cannot be further attenuated)."
+  [token]
+  (map? (:proof token)))
+
 (defn attenuate
   "Appends a new delegated block to an existing token.
 
@@ -59,6 +64,8 @@
 
    No explicit key argument needed — whoever holds the token can
    attenuate it. This is the core capability model.
+
+   Throws if the token is sealed.
 
    Arguments:
      - `token`   : token map with `:blocks` and `:proof`
@@ -72,6 +79,8 @@
    Returns:
      A new token map with the additional block appended."
   [token {:keys [facts rules checks] :as _blocks}]
+  (when (sealed? token)
+    (throw (ex-info "Cannot attenuate a sealed token" {})))
   (let [prev-block (peek (:blocks token))
         {:keys [block next-private-key]}
         (block/delegated-block
@@ -83,6 +92,28 @@
     {:blocks (conj (:blocks token) block)
      :proof  next-private-key}))
 
+(defn seal
+  "Seals a token to prevent further attenuation.
+
+   Signs the last block's hash with the current ephemeral private key,
+   then discards the key. The proof becomes a signature that can be
+   verified against the last block's `:next-key`, but no one can
+   append new blocks.
+
+   Arguments:
+     - `token` : unsealed token map
+
+   Returns:
+     A sealed token map. Calling `attenuate` on a sealed token
+     will throw."
+  [token]
+  (when (sealed? token)
+    (throw (ex-info "Token is already sealed" {})))
+  (let [last-block (peek (:blocks token))
+        seal-sig   (crypto/sign (:proof token) (:hash last-block))]
+    {:blocks (:blocks token)
+     :proof  {:type :sealed :sig seal-sig}}))
+
 (defn verify
   "Verifies the integrity and authenticity of a token.
 
@@ -90,15 +121,25 @@
    with the root public key, each subsequent block is verified with
    the previous block's ephemeral public key.
 
+   For sealed tokens, also verifies the seal signature against the
+   last block's ephemeral public key.
+
    Arguments:
-     - `token` : token map with `:blocks`
+     - `token` : token map with `:blocks` and `:proof`
      - `opts`  : map with `:public-key` (root public key)
 
    Returns:
-     - `true` if the block chain is valid
+     - `true` if the block chain (and seal, if present) is valid
      - `false` otherwise"
   [token {:keys [public-key] :as _opts}]
-  (block/verify-chain (:blocks token) public-key))
+  (let [chain-ok? (block/verify-chain (:blocks token) public-key)]
+    (if (and chain-ok? (sealed? token))
+      (let [last-block (peek (:blocks token))
+            seal-key   (crypto/decode-public-key (:next-key last-block))]
+        (crypto/verify seal-key
+                       (:hash last-block)
+                       (get-in token [:proof :sig])))
+      chain-ok?)))
 
 (defn evaluate
   "Evaluates an already verified token against its internal checks.

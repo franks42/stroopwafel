@@ -222,3 +222,59 @@
                  {:private-key (:priv kp)})]
       (t/is (some? (:proof token)))
       (t/is (instance? java.security.PrivateKey (:proof token))))))
+
+(t/deftest sealed-token-verifies
+  (t/testing "Sealed token passes verification"
+    (let [kp (sut/new-keypair)
+          token (sut/issue
+                 {:facts [[:user "alice"]]}
+                 {:private-key (:priv kp)})
+          sealed (sut/seal token)]
+      (t/is (true? (sut/sealed? sealed)))
+      (t/is (true? (sut/verify sealed {:public-key (:pub kp)}))))))
+
+(t/deftest sealed-token-rejects-attenuate
+  (t/testing "Cannot attenuate a sealed token"
+    (let [kp (sut/new-keypair)
+          token (sut/issue
+                 {:facts [[:user "alice"]]}
+                 {:private-key (:priv kp)})
+          sealed (sut/seal token)]
+      (t/is (thrown-with-msg? clojure.lang.ExceptionInfo
+                              #"Cannot attenuate a sealed token"
+                              (sut/attenuate sealed {:checks [{:id :c1 :query [[:user "alice"]]}]}))))))
+
+(t/deftest sealed-token-evaluates
+  (t/testing "Sealed token evaluates the same as unsealed"
+    (let [kp (sut/new-keypair)
+          token (sut/issue
+                 {:facts  [[:user "alice"]]
+                  :checks [{:id :c1 :query [[:user "alice"]]}]}
+                 {:private-key (:priv kp)})
+          sealed (sut/seal token)
+          r1 (sut/evaluate token)
+          r2 (sut/evaluate sealed)]
+      (t/is (= (:valid? r1) (:valid? r2) true)))))
+
+(t/deftest double-seal-rejected
+  (t/testing "Cannot seal an already sealed token"
+    (let [kp (sut/new-keypair)
+          token (sut/issue
+                 {:facts [[:user "alice"]]}
+                 {:private-key (:priv kp)})
+          sealed (sut/seal token)]
+      (t/is (thrown-with-msg? clojure.lang.ExceptionInfo
+                              #"already sealed"
+                              (sut/seal sealed))))))
+
+(t/deftest sealed-token-with-attenuation
+  (t/testing "Attenuate then seal — full chain verifies"
+    (let [kp (sut/new-keypair)
+          token (sut/issue
+                 {:facts [[:right "alice" :read "/data"]]}
+                 {:private-key (:priv kp)})
+          token (sut/attenuate token {:checks [{:id :c1 :query [[:right "alice" :read "/data"]]}]})
+          sealed (sut/seal token)]
+      (t/is (= 2 (count (:blocks sealed))))
+      (t/is (true? (sut/verify sealed {:public-key (:pub kp)})))
+      (t/is (true? (:valid? (sut/evaluate sealed)))))))
