@@ -10,7 +10,7 @@ from [KEX](https://github.com/serefayar/kex).
 Like a stroopwafel: two layers with something sealed between them — signed
 blocks wrapping authorized data.
 
-**Current version**: v0.1.0 (Phase 1 complete)
+**Current version**: v0.2.0 (Phase 2 complete)
 
 ## Goals
 
@@ -20,9 +20,9 @@ blocks wrapping authorized data.
 
 2. **Achieve Biscuit feature parity** — the parts that matter for Clojure:
    - Append-only signed block chains (Ed25519) ✓ (from KEX)
-   - Datalog authorization engine with proper scoping
-   - Block isolation / attenuation (new blocks can only restrict, never expand)
-   - Negative constraints (deny rules)
+   - Datalog authorization engine with proper scoping ✓ Done (v0.2.0)
+   - Block isolation / attenuation (new blocks can only restrict, never expand) ✓ Done (v0.2.0)
+   - Negative constraints (deny rules) ✓ Done (v0.2.0)
    - Third-party blocks
    - Revocation support
    - Token sealing
@@ -40,19 +40,19 @@ KEX is a ~470-line proof-of-concept by Seref Ayar (EPL-1.0).
 We copy and modify rather than fork because the changes are too fundamental
 for upstream compatibility.
 
-KEX provides the skeleton:
-- `kex.core` — public API: `new-keypair`, `issue`, `attenuate`, `verify`, `evaluate`
-- `kex.datalog` — minimal Datalog: unification, rule firing, check evaluation
-- `kex.block` — authority/delegated block creation, chain verification
-- `kex.crypto` — Ed25519 sign/verify, SHA-256, CEDN canonical serialization
-- `kex.graph` — proof tree → graph visualization
+KEX provided the skeleton:
+- `kex.core` → `stroopwafel.core` — public API
+- `kex.datalog` → `stroopwafel.datalog` — Datalog engine
+- `kex.block` → `stroopwafel.block` — block chain structure
+- `kex.crypto` → `stroopwafel.crypto` — Ed25519, SHA-256, CEDN signing
+- `kex.graph` → `stroopwafel.graph` — proof visualization
 
-KEX limitations to address:
-- No block isolation (delegated blocks can expand authority) ← **SECURITY CRITICAL**
-- No negative constraints or deny rules
+KEX limitations addressed:
+- ~~No block isolation (delegated blocks can expand authority)~~ ✓ Fixed in v0.2.0
+- ~~No negative constraints or deny rules~~ ✓ Fixed in v0.2.0
+- ~~Ad-hoc canonicalization (not CEDN)~~ ✓ Fixed in v0.1.0
 - No revocation
 - No third-party blocks
-- ~~Ad-hoc canonicalization (not CEDN)~~ ✓ Fixed in v0.1.0
 - JVM-only
 
 ### From Biscuit (target feature set)
@@ -81,7 +81,7 @@ CEDN 1.2.0 adds native byte array support via `#bytes "hex"` tagged literal,
 which was specifically requested for stroopwafel's signing pipeline (SHA-256
 hashes and Ed25519 signatures are byte arrays).
 
-## Current Architecture (v0.1.0)
+## Current Architecture (v0.2.0)
 
 ```
 stroopwafel/
@@ -91,20 +91,21 @@ stroopwafel/
 │   ├── biscuit-kex-analysis.md ← detailed analysis of Biscuit, KEX, and gaps
 │   └── bytes-support.md        ← CEDN #bytes feature request (implemented)
 ├── src/
-│   └── kex/                    ← KEX namespaces (to be renamed to stroopwafel/)
-│       ├── core.clj            ← public API
-│       ├── block.clj           ← block chain structure
-│       ├── crypto.clj          ← Ed25519, SHA-256, CEDN signing
-│       ├── datalog.clj         ← Datalog engine
-│       └── graph.clj           ← proof visualization
+│   └── stroopwafel/
+│       ├── core.clj            ← public API: new-keypair, issue, attenuate, verify, evaluate, graph
+│       ├── block.clj           ← block chain signing and verification
+│       ├── crypto.clj          ← Ed25519, SHA-256, CEDN canonical-bytes
+│       ├── datalog.clj         ← Datalog engine with fact store, scoping, origin tracking
+│       └── graph.clj           ← explain tree → graph visualization
 └── test/
-    └── kex/
+    └── stroopwafel/
+        ├── core_test.clj       ← 2 tests (end-to-end with authorizer)
         ├── crypto_test.clj     ← 12 tests
-        ├── datalog_test.clj    ← 10 tests
+        ├── datalog_test.clj    ← 19 tests (10 original + 9 scoping)
         └── graph_test.clj      ← 5 tests
 ```
 
-27 tests, 55 assertions. clj-kondo clean, cljfmt clean.
+38 tests, 71 assertions. clj-kondo clean, cljfmt clean.
 
 ## Dependencies
 
@@ -117,7 +118,7 @@ stroopwafel/
 Production deps: Clojure + CEDN only.
 CEDN itself has zero transitive deps.
 
-## Key Design Decisions Made
+## Key Design Decisions
 
 1. **CEDN over pr-str**: `encode-block` is a single call to
    `cedn/canonical-bytes` — no manual canonicalization, no prep step.
@@ -127,13 +128,43 @@ CEDN itself has zero transitive deps.
    `#bytes "deadbeef"` (lowercase hex). Eliminates the need for manual
    byte-to-hex conversion before serialization.
 
-3. **KEX namespaces preserved for now**: Source lives in `kex.*` namespaces
-   to maintain working tests during foundation work. Rename to `stroopwafel.*`
-   will happen when we start Phase 2 changes.
+3. **Set-based origin model**: Facts are tagged with origin sets rather than
+   keyword labels. Authority facts get `#{0}`, block N facts get `#{N}`,
+   authorizer facts get `#{:authorizer}`. Derived facts carry the union of
+   their input origins plus the rule's block index. This enables precise
+   scope filtering using `(subset? fact-origin trusted-origins)`.
 
-4. **KEX's `canonical` function retained**: Still in `kex.crypto` and tested,
-   but no longer used by `encode-block`. Can be removed when namespaces are
-   renamed.
+4. **Scope isolation**: Each block only sees authority facts, its own facts,
+   and authorizer facts. Block 0 checks: `#{0 :authorizer}`.
+   Block N checks: `#{0 N :authorizer}`. Authorizer checks: `#{0 :authorizer}`.
+   This is the core Biscuit security guarantee: delegated blocks can only
+   restrict authority, never expand it.
+
+5. **Fixpoint rule evaluation**: Rules fire repeatedly until no new facts are
+   produced (or limits are reached: 100 iterations, 1000 facts). Previous
+   KEX code only fired rules once, missing transitive derivations.
+
+6. **Deny rules (reject-if)**: Checks with `:kind :reject` fail when the
+   query matches (inverse of normal checks). Enables negative constraints
+   like "reject if user is banned".
+
+## Authorizer API
+
+The `evaluate` function accepts an `:authorizer` keyword argument:
+
+```clojure
+(stroopwafel.core/evaluate token
+  :authorizer {:facts  [[:time (System/currentTimeMillis)]
+                         [:resource "/api/data"]]
+               :checks [{:id    :check-read
+                         :query [[:can "alice" :read "/api/data"]]}]
+               :rules  '[{:id   :can-from-right
+                          :head [:can ?u ?a ?r]
+                          :body [[:right ?u ?a ?r]]}]})
+```
+
+Authorizer facts/rules/checks are evaluated with scope `#{0 :authorizer}` —
+they see authority block facts but not delegated block facts.
 
 ## Reference Repos (local)
 
@@ -155,11 +186,17 @@ CEDN itself has zero transitive deps.
 - ✓ Add CEDN as a Maven dependency (1.2.0 with #bytes support)
 - ✓ Lint clean (clj-kondo + cljfmt, zero warnings)
 
-### Phase 2: Block Isolation & Attenuation
-- Rename `kex.*` → `stroopwafel.*` namespaces
-- Enforce that delegated blocks can only restrict, never expand authority
-- Proper scoping: authority facts vs block-local facts
-- Negative constraints (deny rules)
+### Phase 2: Block Isolation & Attenuation ✓ (v0.2.0)
+- ✓ Rename `kex.*` → `stroopwafel.*` namespaces
+- ✓ Fact store with set-based origin tracking
+- ✓ Scope filtering (trusted-origins, visible?, facts-for-scope)
+- ✓ Origin-aware unification and eval-body
+- ✓ Scoped rule firing with fixpoint iteration
+- ✓ Restructured eval-token with per-block isolation
+- ✓ Deny rules (reject-if) support
+- ✓ Authorizer context API (:authorizer kwarg on evaluate)
+- ✓ Graph dispatch updated for set-based origins
+- ✓ 9 new scoping tests + 2 end-to-end tests (38 total, 71 assertions)
 
 ### Phase 3: Biscuit Parity
 - Token sealing
