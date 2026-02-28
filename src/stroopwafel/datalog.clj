@@ -92,42 +92,55 @@
         :when (visible? origin trusted)]
     [origin fact]))
 
+(defn unify*
+  "Pure structural pattern matching — no origin or proof tracking.
+
+   Attempts to unify a pattern with a concrete fact given an
+   accumulator state `{:env ... :proof ...}`.
+
+   Returns updated state on success, nil on failure."
+  [state pattern fact]
+  (reduce (fn [state [pt ft]]
+            (when state
+              (let [{:keys [env proof]} state]
+                (cond
+                  (variable? pt)
+                  (when-let [new-env (bind env pt ft)]
+                    {:env   new-env
+                     :proof proof})
+
+                  (= pt ft)
+                  state
+
+                  :else nil))))
+          state
+          (map vector pattern fact)))
+
 (defn unify
   "Attempts to unify a pattern with a concrete fact, producing
-   both variable bindings and proof metadata.
+   variable bindings, proof metadata, and origin tracking.
+
+   Accepts an optional `fact-origin` (default `#{0}`) which
+   records where the matched fact came from.
 
    On success, returns a map with:
     |||
     |:-|:-|
     | `:env`    | variable bindings
     | `:proof`  | evidence showing which fact enabled the match
+    | `:origin` | accumulated origin set
 
    On failure, returns `nil`."
   ([pattern fact]
-   (when-let [result (unify {:env {} :proof []} pattern fact)]
-     (update result :proof conj
-             {:type   :fact
-              :fact   fact
-              :origin :authority})))
-
-  ([state pattern fact]
-   (reduce (fn [state [pt ft]]
-             (when state
-               (let [{:keys [env proof]} state]
-                 (cond
-                   ;; case 1: variable
-                   (variable? pt)
-                   (when-let [new-env (bind env pt ft)]
-                     {:env   new-env
-                      :proof proof})
-
-                   ;; case 2: literal match
-                   (= pt ft)
-                   state
-
-                   :else nil))))
-           state
-           (map vector pattern fact))))
+   (unify pattern fact #{0}))
+  ([pattern fact fact-origin]
+   (when-let [result (unify* {:env {} :proof []} pattern fact)]
+     (-> result
+         (update :proof conj
+                 {:type   :fact
+                  :fact   fact
+                  :origin fact-origin})
+         (assoc :origin fact-origin)))))
 
 (defn eval-body
   "Evaluates a rule or query body against a set of facts.
@@ -135,25 +148,38 @@
    The body is a sequence of patterns that must all be satisfied
    simultaneously (logical AND).
 
+   `facts` can be either:
+     - a sequence of bare facts (backward compatible)
+     - a sequence of `[origin fact]` pairs (origin-aware)
+
    Returns a sequence of states, where each state contains:
    |||
    |:-|:-|
-   | `:env`   | the combined variable bindings
-   | `:proof` | all facts that contributed to satisfying the body."
+   | `:env`    | the combined variable bindings
+   | `:proof`  | all facts that contributed to satisfying the body
+   | `:origin` | accumulated origin set (union of matched fact origins)"
   [body facts]
-  (reduce
-   (fn [states pattern]
-     (for [state states
-           fact  facts
-           :let  [result (unify pattern fact)]
-           :when result
-           :let  [merged-env   (merge (:env state) (:env result))
-                  merged-proof (into (:proof state)
-                                     (:proof result))]]
-       {:env   merged-env
-        :proof merged-proof}))
-   [{:env {} :proof []}]
-   body))
+  (let [;; Normalize: bare facts become [#{0} fact] pairs
+        origin-facts (mapv (fn [f]
+                             (if (and (vector? f) (= 2 (count f)) (set? (first f)))
+                               f
+                               [#{0} f]))
+                           facts)]
+    (reduce
+     (fn [states pattern]
+       (for [state states
+             [fact-origin fact] origin-facts
+             :let  [result (unify pattern fact fact-origin)]
+             :when result
+             :let  [merged-env    (merge (:env state) (:env result))
+                    merged-proof  (into (:proof state) (:proof result))
+                    merged-origin (set/union (or (:origin state) #{})
+                                             (:origin result))]]
+         {:env    merged-env
+          :proof  merged-proof
+          :origin merged-origin}))
+     [{:env {} :proof [] :origin #{}}]
+     body)))
 
 (defn instantiate
   "Instantiates a rule head using a variable environment.
