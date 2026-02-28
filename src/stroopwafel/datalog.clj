@@ -198,32 +198,83 @@
       result)))
 
 (defn fire-rule
-  "Applies a rule to the current fact set and produces derived facts
+  "Applies a rule to a set of facts and produces derived facts
    along with full explanation metadata.
+
+   Accepts either:
+     - bare facts (backward compatible)
+     - `[origin fact]` pairs with `rule-block-idx` for scoped derivation
+
+   Derived fact origin = union of matched origins + rule block index.
 
    For each successful match of the rule body, generates a map with:
    |||
    |:-|:-|
    | `:fact`   | the derived fact
-   | `:origin` | :derived
+   | `:origin` | origin set (or :derived for legacy)
    | `:rule`   | the rule identifier
    | `:env`    | variable bindings used
    | `:proof`  | evidence from the rule body"
-  [{:keys [id head body]} facts]
-  (map (fn [{:keys [env proof]}]
-         (when-let [fact (instantiate head env)]
-           {:fact   fact
-            :origin :derived
-            :rule id
-            :env    env
-            :proof  proof}))
-       (eval-body body facts)))
+  ([rule facts]
+   (fire-rule rule facts nil))
+  ([{:keys [id head body]} facts rule-block-idx]
+   (keep (fn [{:keys [env proof origin]}]
+           (when-let [fact (instantiate head env)]
+             {:fact   fact
+              :origin (if rule-block-idx
+                        (conj (or origin #{}) rule-block-idx)
+                        :derived)
+              :rule   id
+              :env    env
+              :proof  proof}))
+         (eval-body body facts))))
 
 (defn apply-rules
   "Applies rules to the final fact set and produces derived facts
    along with full explanation metadata. see: `fire-rule`"
   [rules facts]
   (mapcat #(fire-rule % (keys facts)) rules))
+
+(def ^:private max-iterations
+  "Maximum number of fixpoint iterations for rule application."
+  100)
+
+(def ^:private max-facts
+  "Maximum total facts allowed in the store."
+  1000)
+
+(defn apply-rules-scoped
+  "Applies rules per-block with scope filtering, running to fixpoint.
+
+   `indexed-rules` is a sequence of `[block-index rules]` pairs.
+   Rules in block N only see facts visible to block N.
+   Derived facts get origin `(conj matched-origins block-index)`.
+
+   Runs until no new facts are produced or limits are reached."
+  [indexed-rules store]
+  (loop [store store
+         iteration 0]
+    (if (>= iteration max-iterations)
+      store
+      (let [new-store
+            (reduce
+             (fn [acc [block-idx rules]]
+               (let [trusted (trusted-origins block-idx)
+                     visible (facts-for-scope acc trusted)]
+                 (reduce
+                  (fn [s rule]
+                    (let [derived (fire-rule rule visible block-idx)]
+                      (reduce (fn [s2 {:keys [fact origin]}]
+                                (if (contains? s2 fact)
+                                  s2
+                                  (insert-fact s2 fact origin)))
+                              s derived)))
+                  acc rules)))
+             store indexed-rules)]
+        (if (or (= (fact-count new-store) (fact-count store))
+                (>= (fact-count new-store) max-facts))
+          new-store
+          (recur new-store (inc iteration)))))))
 
 (defn eval-check
   "Evaluates a single authorization check against the current fact store.
