@@ -10,7 +10,7 @@ from [KEX](https://github.com/serefayar/kex).
 Like a stroopwafel: two layers with something sealed between them — signed
 blocks wrapping authorized data.
 
-**Current version**: v0.4.0 (Phase 3b complete — sealed tokens)
+**Current version**: v0.5.0 (Phase 3d — Datalog expressions)
 
 ## Goals
 
@@ -27,6 +27,7 @@ blocks wrapping authorized data.
    - Authorizer policies (allow/deny) ✓ Done (v0.3.0)
    - Ephemeral keys per block ✓ Done (v0.3.0)
    - Token sealing ✓ Done (v0.4.0)
+   - Datalog expressions (:when guards, :let bindings) ✓ Done (v0.5.0)
    - Third-party blocks
 
 3. **Multi-platform** — JVM, Babashka, and potentially ClojureScript/nbb,
@@ -83,7 +84,7 @@ CEDN 1.2.0 adds native byte array support via `#bytes "hex"` tagged literal,
 which was specifically requested for stroopwafel's signing pipeline (SHA-256
 hashes and Ed25519 signatures are byte arrays).
 
-## Current Architecture (v0.4.0)
+## Current Architecture (v0.5.0)
 
 ```
 stroopwafel/
@@ -98,17 +99,17 @@ stroopwafel/
 │       ├── core.clj            ← public API: new-keypair, issue, attenuate, seal, verify, evaluate, revocation-ids, graph
 │       ├── block.clj           ← block chain signing and verification
 │       ├── crypto.clj          ← Ed25519, SHA-256, key encode/decode, CEDN canonical-bytes
-│       ├── datalog.clj         ← Datalog engine with fact store, scoping, origin tracking
+│       ├── datalog.clj         ← Datalog engine with fact store, scoping, origin tracking, expressions
 │       └── graph.clj           ← explain tree → graph visualization
 └── test/
     └── stroopwafel/
-        ├── core_test.clj       ← 19 tests (e2e, revocation, policies, ephemeral, seal)
+        ├── core_test.clj       ← 23 tests (e2e, revocation, policies, ephemeral, seal, expressions)
         ├── crypto_test.clj     ← 15 tests (crypto, key encode/decode, ephemeral chain)
-        ├── datalog_test.clj    ← 19 tests (10 original + 9 scoping)
+        ├── datalog_test.clj    ← 33 tests (10 original + 9 scoping + 14 expressions)
         └── graph_test.clj      ← 5 tests
 ```
 
-58 tests, 105 assertions. clj-kondo clean, cljfmt clean.
+76 tests, 150 assertions. clj-kondo clean, cljfmt clean.
 
 ## Dependencies
 
@@ -168,6 +169,13 @@ CEDN itself has zero transitive deps.
     No encryption — pure signing + key destruction. Reversible sealing
     deliberately not supported (no realistic use case).
 
+11. **Clojure-native expressions**: Instead of Biscuit's custom expression
+    syntax, guards use Clojure forms evaluated by a mini-interpreter with
+    whitelisted built-in functions (~35). `:when` clauses filter after pattern
+    matching; `:let` bindings compute intermediate values. No `eval`, no
+    `resolve`, no namespace lookup — security boundary enforced by a closed
+    function registry. See `docs/datalog-expressions-clj-design.md`.
+
 ## Authorizer API
 
 The `evaluate` function accepts an `:authorizer` keyword argument:
@@ -218,7 +226,7 @@ unsealed token.
 
 ## Biscuit Parity Status
 
-| Feature | Biscuit | Stroopwafel v0.4.0 | Gap |
+| Feature | Biscuit | Stroopwafel v0.5.0 | Gap |
 |---------|---------|-------------------|-----|
 | Ed25519 signatures | Yes | ✓ | — |
 | Block chain | Yes | ✓ | — |
@@ -230,9 +238,9 @@ unsealed token.
 | Revocation IDs | Yes | ✓ | — |
 | Ephemeral keys | Yes | ✓ | — |
 | Sealed tokens | Yes | ✓ | — |
+| Datalog expressions | Yes | ✓ | — (Clojure-native :when/:let) |
 | Canonical serialization | Protobuf | ✓ CEDN | Different wire format |
 | Proof visualization | No | ✓ | Stroopwafel-only feature |
-| Datalog expressions | Yes | No | **High** — needed for time expiry |
 | Third-party blocks | Yes | No | Medium — advanced pattern |
 | Cross-platform | Multi-lang | JVM only | Phase 4 (bb ready) |
 
@@ -289,11 +297,17 @@ unsealed token.
 - ✓ Reversible sealing deliberately not supported (no realistic use case)
 - ✓ 5 new tests (seal-verifies, rejects-attenuate, evaluates-same, double-seal, chain)
 
-### Phase 3d: Remaining Parity (priority order)
-1. **Datalog expressions** — arithmetic, string ops, date comparisons, built-in
-   functions. Time-based token expiry (`$time < 2026-03-01`) is the #1
-   real-world use case that depends on this.
-2. **Third-party blocks** — external parties sign blocks for delegated
+### Phase 3d: Datalog Expressions ✓ (v0.5.0)
+- ✓ `:when` guard clauses on rules, checks, and policies
+- ✓ `:let` bindings for computed variables
+- ✓ Mini-interpreter with whitelisted built-in functions (~35)
+- ✓ Clojure-native forms — no custom parser needed
+- ✓ Backward compatible — existing rules/checks/policies unchanged
+- ✓ 18 new tests (14 datalog + 4 e2e)
+- ✓ Design document: `docs/datalog-expressions-clj-design.md`
+
+### Phase 3e: Remaining Parity
+1. **Third-party blocks** — external parties sign blocks for delegated
    attestation. Advanced pattern, lower priority.
 
 ### Phase 4: Multi-platform

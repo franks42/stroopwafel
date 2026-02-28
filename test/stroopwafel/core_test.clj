@@ -278,3 +278,88 @@
       (t/is (= 2 (count (:blocks sealed))))
       (t/is (true? (sut/verify sealed {:public-key (:pub kp)})))
       (t/is (true? (:valid? (sut/evaluate sealed)))))))
+
+;;; ---- Datalog expressions end-to-end tests ----
+
+(t/deftest e2e-time-expiry
+  (t/testing "Token with time-based expiry check"
+    (let [kp (sut/new-keypair)
+          token (sut/issue
+                 {:facts  [[:right "alice" :read "/data"]]
+                  :checks '[{:id    :check-expiry
+                             :query [[:time ?t]]
+                             :when  [(< ?t 2000000000000)]}]}
+                 {:private-key (:priv kp)})
+          ;; Time before expiry — should pass
+          result-ok (sut/evaluate token
+                                  :authorizer
+                                  {:facts    [[:time 1000000000000]]
+                                   :policies [{:kind :allow
+                                               :query [[:right "alice" :read "/data"]]}]})
+          ;; Time after expiry — should fail
+          result-fail (sut/evaluate token
+                                    :authorizer
+                                    {:facts    [[:time 3000000000000]]
+                                     :policies [{:kind :allow
+                                                 :query [[:right "alice" :read "/data"]]}]})]
+      (t/is (true? (:valid? result-ok)))
+      (t/is (false? (:valid? result-fail))))))
+
+(t/deftest e2e-amount-limit
+  (t/testing "Amount limit via authorizer"
+    (let [kp (sut/new-keypair)
+          token (sut/issue
+                 {:facts  [[:user "alice"]]
+                  :checks '[{:id    :max-transfer
+                             :query [[:transfer-amount ?a]]
+                             :when  [(<= ?a 10000)]}]}
+                 {:private-key (:priv kp)})
+          result-ok (sut/evaluate token
+                                  :authorizer
+                                  {:facts [[:transfer-amount 5000]]})
+          result-fail (sut/evaluate token
+                                    :authorizer
+                                    {:facts [[:transfer-amount 50000]]})]
+      (t/is (true? (:valid? result-ok)))
+      (t/is (false? (:valid? result-fail))))))
+
+(t/deftest e2e-string-prefix
+  (t/testing "String prefix check on resource path"
+    (let [kp (sut/new-keypair)
+          token (sut/issue
+                 {:facts  [[:user "alice"]]
+                  :checks '[{:id    :public-only
+                             :query [[:resource ?r]]
+                             :when  [(str/starts-with? ?r "/public/")]}]}
+                 {:private-key (:priv kp)})
+          result-ok (sut/evaluate token
+                                  :authorizer
+                                  {:facts [[:resource "/public/docs"]]})
+          result-fail (sut/evaluate token
+                                    :authorizer
+                                    {:facts [[:resource "/private/secrets"]]})]
+      (t/is (true? (:valid? result-ok)))
+      (t/is (false? (:valid? result-fail))))))
+
+(t/deftest e2e-policy-with-guard
+  (t/testing "Policy with :when guard"
+    (let [kp (sut/new-keypair)
+          token (sut/issue
+                 {:facts [[:role "alice" :admin]]}
+                 {:private-key (:priv kp)})
+          ;; Amount within limit — policy allows
+          result-ok (sut/evaluate token
+                                  :authorizer
+                                  {:facts    [[:amount 50]]
+                                   :policies '[{:kind  :allow
+                                                :query [[:role "alice" :admin] [:amount ?a]]
+                                                :when  [(<= ?a 100)]}]})
+          ;; Amount over limit — policy doesn't match — deny by default
+          result-fail (sut/evaluate token
+                                    :authorizer
+                                    {:facts    [[:amount 200]]
+                                     :policies '[{:kind  :allow
+                                                  :query [[:role "alice" :admin] [:amount ?a]]
+                                                  :when  [(<= ?a 100)]}]})]
+      (t/is (true? (:valid? result-ok)))
+      (t/is (false? (:valid? result-fail))))))

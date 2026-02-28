@@ -181,6 +181,104 @@
      [{:env {} :proof [] :origin #{}}]
      body)))
 
+;;; ---- Expression evaluator ----
+
+(def built-in-fns
+  "Whitelisted functions for :when guard expressions.
+
+   Security-critical: only registered functions can be called. No eval,
+   no resolve, no namespace lookup, no I/O. String functions use the
+   str/ prefix matching clojure.string namespace."
+  {;; Comparison
+   '<          <
+   '>          >
+   '<=         <=
+   '>=         >=
+   '=          =
+   'not=       not=
+   ;; Arithmetic
+   '+          +
+   '-          -
+   '*          *
+   '/          /
+   'mod        mod
+   'rem        rem
+   ;; String
+   'str/starts-with?  str/starts-with?
+   'str/ends-with?    str/ends-with?
+   'str/includes?     str/includes?
+   'str/lower-case    str/lower-case
+   'str/upper-case    str/upper-case
+   'subs              subs
+   'str               str
+   ;; Logic
+   'not        not
+   'and        (fn [& args] (every? identity args))
+   'or         (fn [& args] (some identity args))
+   ;; Collections
+   'contains?  contains?
+   'empty?     empty?
+   'count      count
+   ;; Type predicates
+   'string?    string?
+   'number?    number?
+   'keyword?   keyword?
+   'int?       int?
+   'nil?       nil?
+   'some?      some?
+   ;; Regex
+   're-matches re-matches
+   're-find    re-find})
+
+(defn eval-expr
+  "Evaluates a single expression form in the given variable environment.
+
+   - Variables (`?`-prefixed symbols) are looked up in `env`; throws if unbound.
+   - Sequential forms `(f arg1 arg2 ...)` resolve `f` from `built-in-fns`,
+     recursively evaluate args, then apply.
+   - All other values (numbers, strings, keywords) are returned as literals."
+  [form env]
+  (cond
+    (variable? form)
+    (let [v (get env form ::unbound)]
+      (when (= v ::unbound)
+        (throw (ex-info (str "Unbound variable in expression: " form)
+                        {:variable form :env env})))
+      v)
+
+    (sequential? form)
+    (let [[op & args] form
+          f (get built-in-fns op)]
+      (when-not f
+        (throw (ex-info (str "Unknown function in expression: " op)
+                        {:function op})))
+      (apply f (map #(eval-expr % env) args)))
+
+    :else form))
+
+(defn eval-let
+  "Evaluates `:let` bindings, extending the environment with computed variables.
+
+   Each binding is `[?var expr]`. Bindings are evaluated sequentially — later
+   bindings can reference earlier ones. Returns the extended env.
+   Returns env unchanged when `let-bindings` is nil or empty."
+  [let-bindings env]
+  (if (seq let-bindings)
+    (reduce (fn [env [var expr]]
+              (assoc env var (eval-expr expr env)))
+            env let-bindings)
+    env))
+
+(defn eval-when
+  "Evaluates `:when` guard clauses against a variable environment.
+
+   All clauses must return truthy. Returns true when `when-clauses` is
+   nil or empty (backward compatible — no guards means always passes)."
+  [when-clauses env]
+  (if (seq when-clauses)
+    (every? #(eval-expr % env) when-clauses)
+    true))
+
 (defn instantiate
   "Instantiates a rule head using a variable environment.
 
@@ -217,16 +315,18 @@
    | `:proof`  | evidence from the rule body"
   ([rule facts]
    (fire-rule rule facts nil))
-  ([{:keys [id head body]} facts rule-block-idx]
+  ([{:keys [id head body] guards :when let-bindings :let} facts rule-block-idx]
    (keep (fn [{:keys [env proof origin]}]
-           (when-let [fact (instantiate head env)]
-             {:fact   fact
-              :origin (if rule-block-idx
-                        (conj (or origin #{}) rule-block-idx)
-                        :derived)
-              :rule   id
-              :env    env
-              :proof  proof}))
+           (let [env (eval-let let-bindings env)]
+             (when (eval-when guards env)
+               (when-let [fact (instantiate head env)]
+                 {:fact   fact
+                  :origin (if rule-block-idx
+                            (conj (or origin #{}) rule-block-idx)
+                            :derived)
+                  :rule   id
+                  :env    env
+                  :proof  proof}))))
          (eval-body body facts))))
 
 (defn apply-rules
@@ -287,7 +387,7 @@
      - `:reject` (reject-if / deny): passes if NO match"
   ([check fact-store]
    (eval-check check fact-store nil))
-  ([{:keys [id query kind]} fact-store scope]
+  ([{:keys [id query kind] guards :when} fact-store scope]
    (let [visible (if scope
                    (reduce (fn [m [origin fact]] (assoc m fact origin))
                            {}
@@ -295,7 +395,8 @@
                    fact-store)
          origin-facts (for [[fact origin] visible]
                         [origin fact])
-         results (eval-body query origin-facts)
+         results (filter (fn [{:keys [env]}] (eval-when guards env))
+                         (eval-body query origin-facts))
          reject? (= kind :reject)]
      (cond
        ;; reject-if: match means FAIL
@@ -344,13 +445,14 @@
    Returns:
      - `{:matched? true :kind :allow/:deny}` if the query matches
      - `{:matched? false}` if the query does not match"
-  [{:keys [kind query]} fact-store scope]
+  [{:keys [kind query] guards :when} fact-store scope]
   (let [visible (reduce (fn [m [origin fact]] (assoc m fact origin))
                         {}
                         (facts-for-scope fact-store scope))
         origin-facts (for [[fact origin] visible]
                        [origin fact])
-        results (eval-body query origin-facts)]
+        results (filter (fn [{:keys [env]}] (eval-when guards env))
+                        (eval-body query origin-facts))]
     (if (seq results)
       {:matched? true :kind kind}
       {:matched? false})))

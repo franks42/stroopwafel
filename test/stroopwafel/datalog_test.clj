@@ -233,6 +233,135 @@
           result (sut/eval-token token)]
       (t/is (true? (:valid? result))))))
 
+;;; ---- Expression evaluator tests ----
+
+(t/deftest eval-expr-literal-test
+  (t/testing "Literals pass through unchanged"
+    (t/is (= 42 (sut/eval-expr 42 {})))
+    (t/is (= "hello" (sut/eval-expr "hello" {})))
+    (t/is (= :kw (sut/eval-expr :kw {})))))
+
+(t/deftest eval-expr-variable-test
+  (t/testing "Variables are looked up in env"
+    (t/is (= 500 (sut/eval-expr '?t '{?t 500}))))
+  (t/testing "Unbound variable throws"
+    (t/is (thrown-with-msg? clojure.lang.ExceptionInfo
+                            #"Unbound variable"
+                            (sut/eval-expr '?x '{?t 500})))))
+
+(t/deftest eval-expr-comparison-test
+  (t/testing "Comparison operators"
+    (t/is (true? (sut/eval-expr '(< ?t ?limit) '{?t 500 ?limit 1000})))
+    (t/is (false? (sut/eval-expr '(> ?t ?limit) '{?t 500 ?limit 1000})))
+    (t/is (true? (sut/eval-expr '(<= ?a 100) '{?a 100})))
+    (t/is (true? (sut/eval-expr '(= ?x ?y) '{?x 5 ?y 5})))
+    (t/is (true? (sut/eval-expr '(not= ?x ?y) '{?x 5 ?y 10})))))
+
+(t/deftest eval-expr-arithmetic-test
+  (t/testing "Arithmetic operators"
+    (t/is (= 15 (sut/eval-expr '(+ ?a ?b) '{?a 10 ?b 5})))
+    (t/is (= 50 (sut/eval-expr '(* ?q ?p) '{?q 5 ?p 10})))
+    (t/is (= 1 (sut/eval-expr '(mod ?x 3) '{?x 7})))))
+
+(t/deftest eval-expr-string-test
+  (t/testing "String functions with str/ prefix"
+    (t/is (true? (sut/eval-expr '(str/starts-with? ?r "/public/")
+                                '{?r "/public/docs"})))
+    (t/is (false? (sut/eval-expr '(str/starts-with? ?r "/public/")
+                                 '{?r "/private/docs"})))
+    (t/is (true? (sut/eval-expr '(str/includes? ?s "needle")
+                                '{?s "haystackneedlehaystack"})))
+    (t/is (= "HELLO" (sut/eval-expr '(str/upper-case ?s) '{?s "hello"})))))
+
+(t/deftest eval-expr-nested-test
+  (t/testing "Nested expressions evaluate inside-out"
+    (t/is (true? (sut/eval-expr '(and (>= ?t 0) (< ?t ?limit))
+                                '{?t 500 ?limit 1000})))
+    (t/is (false? (sut/eval-expr '(and (>= ?t 0) (< ?t ?limit))
+                                 '{?t -1 ?limit 1000})))
+    (t/is (true? (sut/eval-expr '(<= (* ?q ?p) ?b)
+                                '{?q 5 ?p 10 ?b 100})))))
+
+(t/deftest eval-expr-unknown-fn-test
+  (t/testing "Unknown function throws"
+    (t/is (thrown-with-msg? clojure.lang.ExceptionInfo
+                            #"Unknown function"
+                            (sut/eval-expr '(evil-fn 1 2) {})))))
+
+(t/deftest eval-when-test
+  (t/testing "All guards must pass"
+    (t/is (true? (sut/eval-when '[(> ?t 0) (< ?t 1000)] '{?t 500})))
+    (t/is (false? (sut/eval-when '[(> ?t 0) (< ?t 1000)] '{?t 1500}))))
+  (t/testing "Nil/empty guards always pass"
+    (t/is (true? (sut/eval-when nil {})))
+    (t/is (true? (sut/eval-when [] {})))))
+
+(t/deftest eval-let-test
+  (t/testing "Let bindings extend the environment"
+    (let [env (sut/eval-let '[[?total (* ?q ?p)]] '{?q 5 ?p 10})]
+      (t/is (= 50 (get env '?total)))))
+  (t/testing "Sequential bindings can reference earlier ones"
+    (let [env (sut/eval-let '[[?a (+ ?x 1)] [?b (* ?a 2)]] '{?x 5})]
+      (t/is (= 6 (get env '?a)))
+      (t/is (= 12 (get env '?b)))))
+  (t/testing "Nil let-bindings returns env unchanged"
+    (t/is (= '{?x 5} (sut/eval-let nil '{?x 5})))))
+
+;;; ---- Integration: rules/checks with :when/:let ----
+
+(t/deftest fire-rule-with-when-test
+  (t/testing "Rule fires only when guard passes"
+    (let [facts [[:item "A" 50] [:item "B" 200]]
+          rule  '{:id   :cheap-item
+                  :head [:cheap ?name]
+                  :body [[:item ?name ?price]]
+                  :when [(< ?price 100)]}
+          results (sut/fire-rule rule facts)]
+      (t/is (= 1 (count results)))
+      (t/is (= [:cheap "A"] (:fact (first results)))))))
+
+(t/deftest fire-rule-with-let-and-when-test
+  (t/testing "Rule with :let computes value and :when filters"
+    (let [facts [[:line-item "X" 3 10] [:line-item "Y" 2 200]]
+          rule  '{:id   :compute-total
+                  :head [:invoice-total ?item ?total]
+                  :body [[:line-item ?item ?qty ?price]]
+                  :let  [[?total (* ?qty ?price)]]
+                  :when [(< ?total 100)]}
+          results (sut/fire-rule rule facts)]
+      (t/is (= 1 (count results)))
+      (t/is (= [:invoice-total "X" 30] (:fact (first results)))))))
+
+(t/deftest eval-check-with-when-pass-test
+  (t/testing "Check passes when guard passes"
+    (let [store {[:time 500] #{:authorizer}}
+          check '{:id :check-expiry :query [[:time ?t]] :when [(< ?t 1000)]}
+          result (sut/eval-check check store)]
+      (t/is (= :pass (:result result))))))
+
+(t/deftest eval-check-with-when-fail-test
+  (t/testing "Check fails when pattern matches but guard fails"
+    (let [store {[:time 1500] #{:authorizer}}
+          check '{:id :check-expiry :query [[:time ?t]] :when [(< ?t 1000)]}
+          result (sut/eval-check check store)]
+      (t/is (= :fail (:result result))))))
+
+(t/deftest reject-if-with-when-test
+  (t/testing "Reject-if with guard: match + guard pass = fail"
+    (let [store {[:time 1500] #{0} [:expiry 1000] #{0}}
+          check '{:id :reject-expired :kind :reject
+                  :query [[:time ?t] [:expiry ?exp]]
+                  :when [(>= ?t ?exp)]}
+          result (sut/eval-check check store)]
+      (t/is (= :fail (:result result)))))
+  (t/testing "Reject-if with guard: match + guard fail = pass"
+    (let [store {[:time 500] #{0} [:expiry 1000] #{0}}
+          check '{:id :reject-expired :kind :reject
+                  :query [[:time ?t] [:expiry ?exp]]
+                  :when [(>= ?t ?exp)]}
+          result (sut/eval-check check store)]
+      (t/is (= :pass (:result result))))))
+
 (t/deftest derived-fact-cross-block-test
   (t/testing "Derived fact from block 1 visible to block 1 but not block 2"
     (let [token {:blocks

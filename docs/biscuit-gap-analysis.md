@@ -1,7 +1,7 @@
-# Biscuit Gap Analysis — Stroopwafel v0.4.0
+# Biscuit Gap Analysis — Stroopwafel v0.5.0
 
 Current status of Stroopwafel against the Biscuit specification (v3.3).
-Updated Feb 2026 after sealed tokens completion.
+Updated Feb 2026 after Datalog expressions completion.
 
 See `biscuit-kex-analysis.md` for the original KEX research and Biscuit
 background. This document tracks only the gap status.
@@ -22,7 +22,7 @@ background. This document tracks only the gap status.
 | Canonical serialization | Protobuf | ✓ CEDN | Done (v0.1.0) — different wire format |
 | Proof visualization | No | ✓ Yes | Stroopwafel-only feature |
 | Ephemeral keys per block | Yes | ✓ Yes | Done (v0.3.0) |
-| Datalog expressions | Yes | **No** | Open — **high priority** |
+| Datalog expressions | Yes | ✓ Yes | Done (v0.5.0) — Clojure-native :when/:let |
 | Revocation IDs | Yes | ✓ Yes | Done (v0.3.0) |
 | Authorizer policies | Yes | ✓ Yes | Done (v0.3.0) |
 | Sealed tokens | Yes | ✓ Yes | Done (v0.4.0) |
@@ -119,37 +119,32 @@ unseal) is deliberately not implemented. There is no realistic use case: if
 you want an attenuatable token, don't seal it. If you want a frozen token,
 seal it. Just keep the unsealed copy if you need to attenuate later.
 
+### Datalog Expressions — ✓ Done (v0.5.0)
+
+**What Biscuit does**: Custom expression syntax (`$time < 2026-03-01T00:00:00Z`).
+
+**Stroopwafel approach**: Clojure-native forms with whitelisted built-in
+functions (~35). No custom parser needed.
+
+- `:when` guard clauses on rules, checks, and policies — vector of Clojure
+  forms that must all return truthy
+- `:let` bindings for computed intermediate values
+- Mini-interpreter: `eval-expr` walks forms, substitutes variables, resolves
+  functions from a closed `built-in-fns` registry
+- Security: no `eval`, no `resolve`, no namespace lookup, no I/O
+- Evaluation timing: `eval-body` -> `eval-let` -> `eval-when` -> `instantiate`
+- Backward compatible — existing rules/checks/policies unchanged
+
+Enables time-based token expiry, amount limits, string prefix matching,
+arithmetic guards, and compound conditions.
+
+See `docs/datalog-expressions-clj-design.md` for full design document.
+
 ---
 
 ## Open Gaps (priority order)
 
-### 1. Datalog Expressions — High Priority
-
-**What Biscuit does**: Rule and check bodies can include expression nodes
-alongside fact patterns:
-```
-check if time($time), $time < 2026-03-01T00:00:00Z;
-check if amount($a), $a <= 100;
-check if resource($r), $r.starts_with("/public/");
-```
-
-**Current state**: Only fact pattern matching. No arithmetic, comparisons,
-string operations, or date handling in rule/check bodies.
-
-**Impact**: Can't implement time-based token expiry (the #1 real-world use
-case), amount limits, or string prefix matching.
-
-**Difficulty**: Hard. Requires:
-- New expression AST (comparison, arithmetic, string ops, date ops)
-- Expression evaluator that runs in the context of bound variables
-- Extending `eval-body` to handle expression nodes after pattern matching
-- Built-in functions: `<`, `>`, `<=`, `>=`, `==`, `!=`, `+`, `-`, `*`,
-  `.starts_with`, `.ends_with`, `.contains`, `.length`, `.intersection`,
-  `.union`, `.difference`
-
-**Files affected**: `datalog.clj` (major), `datalog_test.clj` (major)
-
-### 2. Third-Party Blocks — Medium
+### 1. Third-Party Blocks — Medium
 
 **What Biscuit does**: External parties can sign blocks included in the chain
 without seeing the full token. Enables delegated attestation ("IdP X attests
@@ -183,8 +178,8 @@ public key encode/decode. **No encryption primitives exist today.** Analysis:
 | Authorizer policies | No | No crypto involved — pure Datalog evaluation |
 | Ephemeral keys | No | `generate-keypair` already exists — change is structural (key threading) |
 | Sealed tokens | No | Implemented as sign + discard key. No encryption needed. Reversible sealing deliberately not supported — no realistic use case. |
+| Datalog expressions | No | ✓ Done — pure evaluation, no crypto involved |
 | Third-party blocks | No | `sign`/`verify` already exist — needs per-block public key validation |
-| Datalog expressions | No | No crypto involved — pure evaluation |
 
 **Bottom line**: No remaining feature requires new crypto primitives. All open
 gaps (Datalog expressions, third-party blocks) are pure logic, not crypto.
