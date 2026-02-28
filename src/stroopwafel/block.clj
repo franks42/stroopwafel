@@ -63,6 +63,38 @@
     {:block            (assoc payload :hash hash :sig sig)
      :next-private-key (.getPrivate eph-kp)}))
 
+(defn third-party-block
+  "Creates and signs a block that includes a third-party external signature.
+
+   The token holder calls this to append a third-party-signed block to the
+   chain. The block payload includes `:external-sig` and `:external-key`
+   from the third party's response, integrity-protected by the regular
+   ephemeral key chain.
+
+   Arguments:
+     - `prev-block`    : the immediately preceding block in the chain
+     - `tp-block`      : third-party block map with :facts, :rules, :checks,
+                         :external-sig, :external-key
+     - `eph-privkey`   : current ephemeral java.security.PrivateKey
+
+   Returns:
+     `{:block <block-map> :next-private-key <PrivateKey>}`"
+  [prev-block tp-block eph-privkey]
+  (let [eph-kp  (c/generate-keypair "Ed25519")
+        eph-pub (c/encode-public-key (.getPublic eph-kp))
+        payload {:facts        (or (:facts tp-block) [])
+                 :rules        (or (:rules tp-block) [])
+                 :checks       (or (:checks tp-block) [])
+                 :prev-sig     (:sig prev-block)
+                 :next-key     eph-pub
+                 :external-sig (:external-sig tp-block)
+                 :external-key (:external-key tp-block)}
+        bytes   (c/encode-block payload)
+        hash    (c/sha256 bytes)
+        sig     (c/sign eph-privkey hash)]
+    {:block            (assoc payload :hash hash :sig sig)
+     :next-private-key (.getPrivate eph-kp)}))
+
 (defn verify-chain
   "Verifies the integrity and authenticity of a sequence of blocks.
 
@@ -92,10 +124,21 @@
             sig-ok?  (c/verify verify-key hash sig)
             prev-ok? (if prev-sig
                        (c/bytes= (:prev-sig b) prev-sig)
-                       (nil? (:prev-sig b)))]
+                       (nil? (:prev-sig b)))
+            ext-ok?  (if (:external-sig b)
+                       (let [ext-payload {:facts       (:facts b)
+                                          :rules       (:rules b)
+                                          :checks      (:checks b)
+                                          :previous-sig prev-sig}
+                             ext-bytes   (c/encode-block ext-payload)
+                             ext-hash    (c/sha256 ext-bytes)
+                             ext-pubkey  (c/decode-public-key (:external-key b))]
+                         (c/verify ext-pubkey ext-hash (:external-sig b)))
+                       true)]
         (and hash-ok?
              sig-ok?
              prev-ok?
+             ext-ok?
              (recur more
                     (c/decode-public-key next-key)
                     sig))))))

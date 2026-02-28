@@ -363,3 +363,180 @@
                                                   :when  [(<= ?a 100)]}]})]
       (t/is (true? (:valid? result-ok)))
       (t/is (false? (:valid? result-fail))))))
+
+;;; ---- Third-party block end-to-end tests ----
+
+(t/deftest third-party-full-flow
+  (t/testing "Full flow: issue → request → third-party sign → append → verify → evaluate"
+    (let [root-kp (sut/new-keypair)
+          idp-kp  (sut/new-keypair)
+
+          ;; 1. Issue token
+          token (sut/issue
+                 {:facts [[:user "alice"]]}
+                 {:private-key (:priv root-kp)})
+
+          ;; 2. Token holder creates request
+          request (sut/third-party-request token)
+
+          ;; 3. Third party signs block
+          tp-block (sut/create-third-party-block
+                    request
+                    {:facts [[:email "alice" "alice@idp.com"]]}
+                    {:private-key (:priv idp-kp)
+                     :public-key  (:pub idp-kp)})
+
+          ;; 4. Token holder appends
+          token (sut/append-third-party token tp-block)
+
+          ;; 5. Verify
+          verified? (sut/verify token {:public-key (:pub root-kp)})]
+
+      (t/is (true? verified?))
+      (t/is (= 2 (count (:blocks token))))
+
+      ;; 6. Evaluate with trusted key
+      (let [result (sut/evaluate token
+                                 :authorizer
+                                 {:trusted-external-keys [(:pub idp-kp)]
+                                  :checks [{:id    :has-email
+                                            :query [[:email "alice" "alice@idp.com"]]}]})]
+        (t/is (true? (:valid? result))))
+
+      ;; Without trusting the key, authorizer can't see third-party facts
+      (let [result (sut/evaluate token
+                                 :authorizer
+                                 {:checks [{:id    :has-email
+                                            :query [[:email "alice" "alice@idp.com"]]}]})]
+        (t/is (false? (:valid? result)))))))
+
+(t/deftest third-party-replay-prevention
+  (t/testing "Block signed for token A fails verification on token B"
+    (let [root-kp (sut/new-keypair)
+          idp-kp  (sut/new-keypair)
+
+          token-a (sut/issue
+                   {:facts [[:user "alice"]]}
+                   {:private-key (:priv root-kp)})
+          token-b (sut/issue
+                   {:facts [[:user "bob"]]}
+                   {:private-key (:priv root-kp)})
+
+          ;; Create request for token A
+          request-a (sut/third-party-request token-a)
+
+          ;; Third party signs for token A
+          tp-block (sut/create-third-party-block
+                    request-a
+                    {:facts [[:verified "alice"]]}
+                    {:private-key (:priv idp-kp)
+                     :public-key  (:pub idp-kp)})
+
+          ;; Try to append to token B (different previous-sig)
+          token-b-with-tp (sut/append-third-party token-b tp-block)
+
+          ;; Verification should fail (external sig bound to token A's previous sig)
+          verified? (sut/verify token-b-with-tp {:public-key (:pub root-kp)})]
+
+      (t/is (false? verified?)))))
+
+(t/deftest third-party-sealed-token-rejects
+  (t/testing "Sealed token rejects third-party request and append"
+    (let [root-kp (sut/new-keypair)
+          idp-kp  (sut/new-keypair)
+          token (sut/issue
+                 {:facts [[:user "alice"]]}
+                 {:private-key (:priv root-kp)})
+
+          ;; Get request before sealing
+          request (sut/third-party-request token)
+          tp-block (sut/create-third-party-block
+                    request
+                    {:facts [[:verified "alice"]]}
+                    {:private-key (:priv idp-kp)
+                     :public-key  (:pub idp-kp)})
+
+          sealed (sut/seal token)]
+
+      (t/is (thrown-with-msg? clojure.lang.ExceptionInfo
+                              #"sealed"
+                              (sut/third-party-request sealed)))
+      (t/is (thrown-with-msg? clojure.lang.ExceptionInfo
+                              #"sealed"
+                              (sut/append-third-party sealed tp-block))))))
+
+(t/deftest third-party-mixed-blocks
+  (t/testing "Mixed first-party + third-party blocks"
+    (let [root-kp (sut/new-keypair)
+          idp-kp  (sut/new-keypair)
+
+          token (sut/issue
+                 {:facts [[:user "alice"]]}
+                 {:private-key (:priv root-kp)})
+
+          ;; First-party attenuation
+          token (sut/attenuate token
+                               {:checks [{:id :c1 :query [[:user "alice"]]}]})
+
+          ;; Third-party block
+          request (sut/third-party-request token)
+          tp-block (sut/create-third-party-block
+                    request
+                    {:facts [[:idp-verified "alice"]]}
+                    {:private-key (:priv idp-kp)
+                     :public-key  (:pub idp-kp)})
+          token (sut/append-third-party token tp-block)
+
+          ;; Another first-party attenuation
+          token (sut/attenuate token
+                               {:checks [{:id :c2 :query [[:user "alice"]]}]})]
+
+      (t/is (= 4 (count (:blocks token))))
+      (t/is (true? (sut/verify token {:public-key (:pub root-kp)})))
+      (t/is (true? (:valid? (sut/evaluate token
+                                          :authorizer
+                                          {:trusted-external-keys [(:pub idp-kp)]
+                                           :checks [{:id    :has-idp
+                                                     :query [[:idp-verified "alice"]]}]})))))))
+
+(t/deftest third-party-revocation-ids
+  (t/testing "Revocation IDs include third-party blocks"
+    (let [root-kp (sut/new-keypair)
+          idp-kp  (sut/new-keypair)
+          token (sut/issue
+                 {:facts [[:user "alice"]]}
+                 {:private-key (:priv root-kp)})
+          request (sut/third-party-request token)
+          tp-block (sut/create-third-party-block
+                    request
+                    {:facts [[:verified "alice"]]}
+                    {:private-key (:priv idp-kp)
+                     :public-key  (:pub idp-kp)})
+          token (sut/append-third-party token tp-block)
+          ids (sut/revocation-ids token)]
+      (t/is (= 2 (count ids)))
+      (t/is (not= (first ids) (second ids)))
+      (t/is (every? #(re-matches #"[0-9a-f]{64}" %) ids)))))
+
+(t/deftest third-party-seal-after-append
+  (t/testing "Seal after third-party append works correctly"
+    (let [root-kp (sut/new-keypair)
+          idp-kp  (sut/new-keypair)
+          token (sut/issue
+                 {:facts [[:user "alice"]]}
+                 {:private-key (:priv root-kp)})
+          request (sut/third-party-request token)
+          tp-block (sut/create-third-party-block
+                    request
+                    {:facts [[:verified "alice"]]}
+                    {:private-key (:priv idp-kp)
+                     :public-key  (:pub idp-kp)})
+          token (sut/append-third-party token tp-block)
+          sealed (sut/seal token)]
+      (t/is (true? (sut/sealed? sealed)))
+      (t/is (true? (sut/verify sealed {:public-key (:pub root-kp)})))
+      (t/is (true? (:valid? (sut/evaluate sealed
+                                          :authorizer
+                                          {:trusted-external-keys [(:pub idp-kp)]
+                                           :checks [{:id    :c1
+                                                     :query [[:verified "alice"]]}]})))))))

@@ -350,8 +350,12 @@
    Rules in block N only see facts visible to block N.
    Derived facts get origin `(conj matched-origins block-index)`.
 
+   When `authorizer-scope` is provided, the `:authorizer` block uses
+   that scope instead of the default `(trusted-origins :authorizer)`.
+   This extends authorizer visibility to trusted third-party blocks.
+
    Runs until no new facts are produced or limits are reached."
-  [indexed-rules store]
+  [indexed-rules store & {:keys [authorizer-scope]}]
   (loop [store store
          iteration 0]
     (if (>= iteration max-iterations)
@@ -359,7 +363,9 @@
       (let [new-store
             (reduce
              (fn [acc [block-idx rules]]
-               (let [trusted (trusted-origins block-idx)
+               (let [trusted (if (and (= block-idx :authorizer) authorizer-scope)
+                               authorizer-scope
+                               (trusted-origins block-idx))
                      visible (facts-for-scope acc trusted)]
                  (reduce
                   (fn [s rule]
@@ -507,8 +513,12 @@
    | `:valid?`  | boolean authorization decision
    | `:explain` | optional proof tree when :explain? is enabled"
   [{:keys [blocks] :as _token}
-   & {:keys [explain? authorizer]}]
-  (let [;; 1. Build fact store with origin tags
+   & {:keys [explain? authorizer trusted-block-indices]}]
+  (let [;; Compute authorizer scope (extended when third-party blocks are trusted)
+        authorizer-scope (when trusted-block-indices
+                           (into #{0 :authorizer} trusted-block-indices))
+
+        ;; 1. Build fact store with origin tags
         store (reduce-kv
                (fn [s idx block]
                  (insert-facts s (:facts block) #{idx}))
@@ -529,7 +539,8 @@
                  [[:authorizer (:rules authorizer)]])))
 
         ;; 4. Apply rules to fixpoint with scope filtering
-        store (apply-rules-scoped indexed-rules store)
+        store (apply-rules-scoped indexed-rules store
+                                  :authorizer-scope authorizer-scope)
 
         ;; 5. Evaluate checks per block with scoped visibility
         block-results
@@ -540,10 +551,12 @@
              (eval-checks (:checks block) store scope)))
          (range (count blocks)))
 
-        ;; 6. Evaluate authorizer checks
+        ;; 6. Evaluate authorizer checks (with extended scope if trusted blocks)
+        auth-scope (or authorizer-scope (trusted-origins nil))
+
         authorizer-results
         (when (:checks authorizer)
-          (eval-checks (:checks authorizer) store (trusted-origins nil)))
+          (eval-checks (:checks authorizer) store auth-scope))
 
         all-results (concat block-results authorizer-results)
         failed (first (filter #(= :fail (:result %)) all-results))
@@ -551,7 +564,7 @@
         ;; 7. Evaluate authorizer policies (after all checks pass)
         policy-result
         (when (and (nil? failed) (:policies authorizer))
-          (eval-policies (:policies authorizer) store (trusted-origins nil)))]
+          (eval-policies (:policies authorizer) store auth-scope))]
     (cond
       failed
       (if explain?

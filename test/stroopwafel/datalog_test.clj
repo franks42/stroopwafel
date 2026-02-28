@@ -380,3 +380,102 @@
                              :query [[:tagged "alice"]]}]}]}
           result (sut/eval-token token)]
       (t/is (false? (:valid? result))))))
+
+;;; ---- Third-party block scope tests ----
+
+(t/deftest authorizer-sees-trusted-third-party-facts
+  (t/testing "Authorizer can see third-party block facts when trusted"
+    (let [token {:blocks
+                 [{:facts  [[:user "alice"]]
+                   :rules  []
+                   :checks []}
+                  {:facts  [[:role "alice" :verified]]
+                   :rules  []
+                   :checks []}]}
+          result (sut/eval-token token
+                                 :trusted-block-indices #{1}
+                                 :authorizer
+                                 {:checks [{:id    :c1
+                                            :query [[:role "alice" :verified]]}]})]
+      (t/is (true? (:valid? result))))))
+
+(t/deftest authorizer-rules-derive-from-trusted-third-party-facts
+  (t/testing "Authorizer rules can derive facts from trusted third-party data"
+    (let [token {:blocks
+                 [{:facts  [[:user "alice"]]
+                   :rules  []
+                   :checks []}
+                  {:facts  [[:email "alice" "alice@example.com"]]
+                   :rules  []
+                   :checks []}]}
+          result (sut/eval-token token
+                                 :trusted-block-indices #{1}
+                                 :authorizer
+                                 {:rules   '[{:id   :has-email
+                                              :head [:verified ?u]
+                                              :body [[:user ?u] [:email ?u ?e]]}]
+                                  :checks  [{:id    :c1
+                                             :query [[:verified "alice"]]}]})]
+      (t/is (true? (:valid? result))))))
+
+(t/deftest policies-see-trusted-third-party-facts
+  (t/testing "Authorizer policies can match against trusted third-party facts"
+    (let [token {:blocks
+                 [{:facts  [[:user "alice"]]
+                   :rules  []
+                   :checks []}
+                  {:facts  [[:idp-verified "alice"]]
+                   :rules  []
+                   :checks []}]}
+          result (sut/eval-token token
+                                 :trusted-block-indices #{1}
+                                 :authorizer
+                                 {:policies [{:kind  :allow
+                                              :query [[:idp-verified "alice"]]}]})]
+      (t/is (true? (:valid? result))))))
+
+(t/deftest first-party-block-cannot-see-third-party-facts
+  (t/testing "First-party block cannot see trusted third-party facts"
+    (let [token {:blocks
+                 [{:facts  [[:user "alice"]]
+                   :rules  []
+                   :checks []}
+                  {:facts  [[:idp-verified "alice"]]
+                   :rules  []
+                   :checks []}
+                  {:facts  []
+                   :rules  []
+                   :checks [{:id    :c1
+                             :query [[:idp-verified "alice"]]}]}]}
+          result (sut/eval-token token
+                                 :trusted-block-indices #{1})]
+      (t/is (false? (:valid? result))))))
+
+(t/deftest third-party-block-own-checks-work
+  (t/testing "Third-party block's own checks work normally"
+    (let [token {:blocks
+                 [{:facts  [[:user "alice"]]
+                   :rules  []
+                   :checks []}
+                  {:facts  [[:tp-data "x"]]
+                   :rules  []
+                   :checks [{:id    :tp-check
+                             :query [[:user "alice"]]}]}]}
+          result (sut/eval-token token
+                                 :trusted-block-indices #{1})]
+      (t/is (true? (:valid? result))))))
+
+(t/deftest nil-trusted-block-indices-backward-compat
+  (t/testing "nil trusted-block-indices behaves like before (no third-party trust)"
+    (let [token {:blocks
+                 [{:facts  [[:user "alice"]]
+                   :rules  []
+                   :checks []}
+                  {:facts  [[:role "alice" :admin]]
+                   :rules  []
+                   :checks []}]}
+          result (sut/eval-token token
+                                 :authorizer
+                                 {:checks [{:id    :c1
+                                            :query [[:role "alice" :admin]]}]})]
+      (t/is (false? (:valid? result))))))

@@ -1,7 +1,7 @@
-# Biscuit Gap Analysis — Stroopwafel v0.5.0
+# Biscuit Gap Analysis — Stroopwafel v0.6.0
 
 Current status of Stroopwafel against the Biscuit specification (v3.3).
-Updated Feb 2026 after Datalog expressions completion.
+Updated Feb 2026 after third-party blocks completion.
 
 See `biscuit-kex-analysis.md` for the original KEX research and Biscuit
 background. This document tracks only the gap status.
@@ -26,7 +26,7 @@ background. This document tracks only the gap status.
 | Revocation IDs | Yes | ✓ Yes | Done (v0.3.0) |
 | Authorizer policies | Yes | ✓ Yes | Done (v0.3.0) |
 | Sealed tokens | Yes | ✓ Yes | Done (v0.4.0) |
-| Third-party blocks | Yes | **No** | Open — medium |
+| Third-party blocks | Yes | ✓ Yes | Done (v0.6.0) |
 | Cross-platform | Multi-lang | JVM only | Open — bb ready, CLJS needs work |
 
 ---
@@ -140,30 +140,31 @@ arithmetic guards, and compound conditions.
 
 See `docs/datalog-expressions-clj-design.md` for full design document.
 
----
-
-## Open Gaps (priority order)
-
-### 1. Third-Party Blocks — Medium
+### Third-Party Blocks — ✓ Done (v0.6.0)
 
 **What Biscuit does**: External parties can sign blocks included in the chain
 without seeing the full token. Enables delegated attestation ("IdP X attests
 user has role Y").
 
-**Current state**: All blocks must be signed with the same key (or by someone
-who has the attenuation key).
+**Implementation**:
+- `third-party-request` extracts `{:previous-sig ...}` from token
+- `create-third-party-block` signs `SHA-256(encode-block({:facts :rules :checks :previous-sig}))` with third party's key, binding content to a specific token
+- `append-third-party` appends the signed block via the ephemeral key chain
+- Dual signature: external-sig (third party) + chain sig (token holder)
+- `verify-chain` validates both chain signatures and external signatures
+- Authorizer trusts specific keys via `:trusted-external-keys` on `evaluate`
+- Scope: trusted third-party block facts visible to authorizer rules, checks,
+  and policies. First-party blocks cannot see third-party facts (per-block scope
+  unchanged). Without `:trusted-external-keys`, third-party facts are invisible.
+- Replay prevention: external signature is bound to the specific token's
+  `previous-sig` — a block signed for token A fails verification on token B.
 
-**Implementation**: Requires:
-- Per-block public key validation (not just authority key)
-- Third-party block request/response protocol
-- Separate signature verification path for third-party blocks
-- Scope rules: third-party block facts are scoped to that block
+---
 
-**Priority**: Low-medium. Advanced delegation pattern not needed for most
-single-issuer use cases.
+## Open Gaps
 
-**Files affected**: `block.clj` (medium), `core.clj` (medium),
-`crypto.clj` (minor)
+No feature gaps remain against the Biscuit specification (excluding wire format
+interoperability and cross-platform support).
 
 ---
 
@@ -179,10 +180,10 @@ public key encode/decode. **No encryption primitives exist today.** Analysis:
 | Ephemeral keys | No | `generate-keypair` already exists — change is structural (key threading) |
 | Sealed tokens | No | Implemented as sign + discard key. No encryption needed. Reversible sealing deliberately not supported — no realistic use case. |
 | Datalog expressions | No | ✓ Done — pure evaluation, no crypto involved |
-| Third-party blocks | No | `sign`/`verify` already exist — needs per-block public key validation |
+| Third-party blocks | No | ✓ Done — `sign`/`verify`/`encode-block` reused for external signatures |
 
-**Bottom line**: No remaining feature requires new crypto primitives. All open
-gaps (Datalog expressions, third-party blocks) are pure logic, not crypto.
+**Bottom line**: No feature required new crypto primitives. All gaps were
+closed with existing `sign`/`verify`/`sha256`/`encode-block` functions.
 
 ---
 

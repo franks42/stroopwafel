@@ -92,6 +92,78 @@
     {:blocks (conj (:blocks token) block)
      :proof  next-private-key}))
 
+(defn third-party-request
+  "Extracts a third-party block request from a token.
+
+   The request contains the previous signature needed by the third party
+   to bind their signed block to this specific token instance.
+
+   Throws if the token is sealed.
+
+   Arguments:
+     - `token` : unsealed token map
+
+   Returns:
+     `{:previous-sig <bytes>}`"
+  [token]
+  (when (sealed? token)
+    (throw (ex-info "Cannot create third-party request from a sealed token" {})))
+  {:previous-sig (:sig (peek (:blocks token)))})
+
+(defn create-third-party-block
+  "Creates a third-party signed block (called by the external party).
+
+   The third party signs `SHA-256(encode-block({:facts :rules :checks :previous-sig}))`
+   binding the block content to a specific token instance via `previous-sig`.
+
+   Arguments:
+     - `request` : map with `:previous-sig` (from `third-party-request`)
+     - `payload` : map with `:facts`, `:rules`, `:checks`
+     - `opts`    : map with `:private-key` and `:public-key` (third party's keys)
+
+   Returns:
+     `{:facts [...] :rules [...] :checks [...] :external-sig <bytes> :external-key <bytes>}`"
+  [request payload {:keys [private-key public-key]}]
+  (let [facts  (or (:facts payload) [])
+        rules  (or (:rules payload) [])
+        checks (or (:checks payload) [])
+        ext-payload {:facts        facts
+                     :rules        rules
+                     :checks       checks
+                     :previous-sig (:previous-sig request)}
+        ext-bytes   (crypto/encode-block ext-payload)
+        ext-hash    (crypto/sha256 ext-bytes)
+        ext-sig     (crypto/sign private-key ext-hash)]
+    {:facts        facts
+     :rules        rules
+     :checks       checks
+     :external-sig ext-sig
+     :external-key (crypto/encode-public-key public-key)}))
+
+(defn append-third-party
+  "Appends a third-party signed block to a token.
+
+   The token holder calls this after receiving the signed block from
+   the third party. Delegates to `block/third-party-block` to maintain
+   the ephemeral key chain.
+
+   Throws if the token is sealed.
+
+   Arguments:
+     - `token`    : unsealed token map
+     - `tp-block` : third-party block map from `create-third-party-block`
+
+   Returns:
+     A new token map with the third-party block appended."
+  [token tp-block]
+  (when (sealed? token)
+    (throw (ex-info "Cannot append to a sealed token" {})))
+  (let [prev-block (peek (:blocks token))
+        {:keys [block next-private-key]}
+        (block/third-party-block prev-block tp-block (:proof token))]
+    {:blocks (conj (:blocks token) block)
+     :proof  next-private-key}))
+
 (defn seal
   "Seals a token to prevent further attenuation.
 
@@ -172,10 +244,23 @@
   (let [core-token
         {:blocks
          (mapv #(select-keys % [:facts :rules :checks])
-               (:blocks token))}]
+               (:blocks token))}
+
+        ;; Compute trusted third-party block indices
+        trusted-block-indices
+        (when-let [trusted-keys (:trusted-external-keys authorizer)]
+          (let [trusted-encoded (mapv crypto/encode-public-key trusted-keys)]
+            (into #{}
+                  (keep-indexed
+                   (fn [idx block]
+                     (when-let [ext-key (:external-key block)]
+                       (when (some #(crypto/bytes= ext-key %) trusted-encoded)
+                         idx))))
+                  (:blocks token))))]
     (datalog/eval-token core-token
                         :explain? explain?
-                        :authorizer authorizer)))
+                        :authorizer (dissoc authorizer :trusted-external-keys)
+                        :trusted-block-indices trusted-block-indices)))
 
 (defn revocation-ids
   "Extracts revocation IDs from a token.

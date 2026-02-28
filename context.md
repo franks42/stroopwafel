@@ -10,7 +10,7 @@ from [KEX](https://github.com/serefayar/kex).
 Like a stroopwafel: two layers with something sealed between them — signed
 blocks wrapping authorized data.
 
-**Current version**: v0.5.0 (Phase 3d — Datalog expressions)
+**Current version**: v0.6.0 (Phase 3e — Third-party blocks)
 
 ## Goals
 
@@ -28,7 +28,7 @@ blocks wrapping authorized data.
    - Ephemeral keys per block ✓ Done (v0.3.0)
    - Token sealing ✓ Done (v0.4.0)
    - Datalog expressions (:when guards, :let bindings) ✓ Done (v0.5.0)
-   - Third-party blocks
+   - Third-party blocks ✓ Done (v0.6.0)
 
 3. **Multi-platform** — JVM, Babashka, and potentially ClojureScript/nbb,
    following the same .cljc patterns as CEDN.
@@ -55,7 +55,7 @@ KEX limitations addressed:
 - ~~No negative constraints or deny rules~~ ✓ Fixed in v0.2.0
 - ~~Ad-hoc canonicalization (not CEDN)~~ ✓ Fixed in v0.1.0
 - ~~No revocation~~ ✓ Fixed in v0.3.0
-- No third-party blocks
+- ~~No third-party blocks~~ ✓ Fixed in v0.6.0
 - JVM-only
 
 ### From Biscuit (target feature set)
@@ -84,7 +84,7 @@ CEDN 1.2.0 adds native byte array support via `#bytes "hex"` tagged literal,
 which was specifically requested for stroopwafel's signing pipeline (SHA-256
 hashes and Ed25519 signatures are byte arrays).
 
-## Current Architecture (v0.5.0)
+## Current Architecture (v0.6.0)
 
 ```
 stroopwafel/
@@ -97,20 +97,20 @@ stroopwafel/
 │   └── datalog-expressions-clj-design.md ← expression design: :when, :let, built-ins
 ├── src/
 │   └── stroopwafel/
-│       ├── core.clj            ← public API: new-keypair, issue, attenuate, seal, verify, evaluate, revocation-ids, graph
+│       ├── core.clj            ← public API: new-keypair, issue, attenuate, seal, verify, evaluate, revocation-ids, graph, third-party-request, create-third-party-block, append-third-party
 │       ├── block.clj           ← block chain signing and verification
 │       ├── crypto.clj          ← Ed25519, SHA-256, key encode/decode, CEDN canonical-bytes
 │       ├── datalog.clj         ← Datalog engine with fact store, scoping, origin tracking, expressions
 │       └── graph.clj           ← explain tree → graph visualization
 └── test/
     └── stroopwafel/
-        ├── core_test.clj       ← 23 tests (e2e, revocation, policies, ephemeral, seal, expressions)
+        ├── core_test.clj       ← 29 tests (e2e, revocation, policies, ephemeral, seal, expressions, third-party)
         ├── crypto_test.clj     ← 15 tests (crypto, key encode/decode, ephemeral chain)
-        ├── datalog_test.clj    ← 33 tests (10 original + 9 scoping + 14 expressions)
+        ├── datalog_test.clj    ← 39 tests (10 original + 9 scoping + 14 expressions + 6 third-party scope)
         └── graph_test.clj      ← 5 tests
 ```
 
-76 tests, 150 assertions. clj-kondo clean, cljfmt clean.
+88 tests, 172 assertions. clj-kondo clean, cljfmt clean.
 
 ## Dependencies
 
@@ -176,6 +176,16 @@ CEDN itself has zero transitive deps.
     matching; `:let` bindings compute intermediate values. No `eval`, no
     `resolve`, no namespace lookup — security boundary enforced by a closed
     function registry. See `docs/datalog-expressions-clj-design.md`.
+
+12. **Third-party blocks**: External parties sign blocks that get appended to
+    tokens without seeing the full token. Dual signature: the third party's
+    external signature (binding content to a specific token via `previous-sig`)
+    + the token holder's ephemeral key chain signature. The authorizer decides
+    which external keys to trust via `:trusted-external-keys`. Trusted
+    third-party block facts become visible to authorizer rules, checks, and
+    policies — but NOT to other first-party blocks (per-block scope unchanged).
+
+## Authorizer API
 
 ## Authorizer API
 
@@ -266,9 +276,43 @@ Evaluation order: `eval-body` (pattern match) -> `eval-let` (compute bindings)
 
 See `docs/datalog-expressions-clj-design.md` for full design document.
 
+## Third-Party Block API
+
+Third-party blocks let an external party (e.g., an IdP) sign a block that gets
+appended to a token — without seeing the full token. The block content is bound
+to a specific token instance via `previous-sig`.
+
+```clojure
+;; 1. Token holder creates request
+(def request (stroopwafel.core/third-party-request token))
+;; => {:previous-sig <bytes>}
+
+;; 2. Third party signs block (on their side)
+(def tp-block
+  (stroopwafel.core/create-third-party-block
+    request
+    {:facts [[:email "alice" "alice@idp.com"]]}
+    {:private-key idp-sk :public-key idp-pk}))
+;; => {:facts [...] :external-sig <bytes> :external-key <bytes>}
+
+;; 3. Token holder appends
+(def token2 (stroopwafel.core/append-third-party token tp-block))
+
+;; 4. Authorizer trusts specific external keys
+(stroopwafel.core/evaluate token2
+  :authorizer {:trusted-external-keys [idp-pk]
+               :checks [{:id    :has-email
+                          :query [[:email "alice" "alice@idp.com"]]}]})
+```
+
+Scope rules: Trusted third-party block facts are visible to the authorizer's
+rules, checks, and policies. First-party blocks still cannot see third-party
+facts (per-block scope unchanged). Without `:trusted-external-keys`, third-party
+facts are invisible to the authorizer (backward compatible).
+
 ## Biscuit Parity Status
 
-| Feature | Biscuit | Stroopwafel v0.5.0 | Gap |
+| Feature | Biscuit | Stroopwafel v0.6.0 | Gap |
 |---------|---------|-------------------|-----|
 | Ed25519 signatures | Yes | ✓ | — |
 | Block chain | Yes | ✓ | — |
@@ -283,7 +327,7 @@ See `docs/datalog-expressions-clj-design.md` for full design document.
 | Datalog expressions | Yes | ✓ | — (Clojure-native :when/:let) |
 | Canonical serialization | Protobuf | ✓ CEDN | Different wire format |
 | Proof visualization | No | ✓ | Stroopwafel-only feature |
-| Third-party blocks | Yes | No | Medium — advanced pattern |
+| Third-party blocks | Yes | ✓ | — |
 | Cross-platform | Multi-lang | JVM only | Phase 4 (bb ready) |
 
 ## Reference Repos (local)
@@ -348,9 +392,16 @@ See `docs/datalog-expressions-clj-design.md` for full design document.
 - ✓ 18 new tests (14 datalog + 4 e2e)
 - ✓ Design document: `docs/datalog-expressions-clj-design.md`
 
-### Phase 3e: Remaining Parity
-1. **Third-party blocks** — external parties sign blocks for delegated
-   attestation. Advanced pattern, lower priority.
+### Phase 3e: Third-Party Blocks ✓ (v0.6.0)
+- ✓ `third-party-request` — extract request from token for external party
+- ✓ `create-third-party-block` — third party signs block bound to specific token
+- ✓ `append-third-party` — token holder appends signed block to chain
+- ✓ Dual signature: external-sig (third party) + chain sig (token holder)
+- ✓ Replay prevention via `previous-sig` binding
+- ✓ `verify-chain` validates external signatures
+- ✓ Authorizer trusts specific keys via `:trusted-external-keys`
+- ✓ Scope: authorizer sees trusted third-party facts; first-party blocks do not
+- ✓ 12 new tests (6 datalog scope + 6 e2e)
 
 ### Phase 4: Multi-platform
 - .cljc throughout (JVM + Babashka + potentially CLJS)
