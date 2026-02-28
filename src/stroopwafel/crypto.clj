@@ -1,7 +1,8 @@
 (ns stroopwafel.crypto
   (:require [cedn.core :as cedn])
   (:import
-   [java.security MessageDigest Signature KeyPairGenerator]
+   [java.security KeyFactory KeyPairGenerator MessageDigest Signature]
+   [java.security.spec X509EncodedKeySpec]
    [java.util Arrays]))
 
 (defn canonical
@@ -96,6 +97,24 @@
     (.initVerify sig pub)
     (.update sig data)
     (.verify sig signature)))
+
+(defn encode-public-key
+  "Encodes a public key as an X.509 byte array.
+
+   This is the standard encoding for storing public keys in
+   block payloads, where CEDN serializes them as `#bytes`."
+  [^java.security.PublicKey pub]
+  (.getEncoded pub))
+
+(defn decode-public-key
+  "Decodes an X.509-encoded byte array back into a PublicKey.
+
+   Used when verifying the ephemeral key chain — each block's
+   `:next-key` bytes are decoded to verify the next block's signature."
+  [^bytes encoded]
+  (let [spec (X509EncodedKeySpec. encoded)
+        kf   (KeyFactory/getInstance "Ed25519")]
+    (.generatePublic kf spec)))
 
 (defn encode-block
   "Encodes a block payload into a canonical byte representation

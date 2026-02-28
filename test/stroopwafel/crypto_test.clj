@@ -62,86 +62,120 @@
               msg
               sig))))))
 
+(t/deftest encode-decode-public-key-roundtrip
+  (t/testing "public key survives encode/decode round-trip"
+    (let [kp      (sut/generate-keypair "Ed25519")
+          pub     (.getPublic kp)
+          encoded (sut/encode-public-key pub)
+          decoded (sut/decode-public-key encoded)]
+      (t/is (sut/bytes=
+             (sut/encode-public-key pub)
+             (sut/encode-public-key decoded))))))
+
 (t/deftest authority-block-test
   (t/testing "authority block is self-contained and signed"
-    (let [kp   (sut/generate-keypair "Ed25519")
-          blk  (block/authority-block
-                [[:user "alice"]]
-                []
-                []
-                (.getPrivate kp))]
+    (let [kp     (sut/generate-keypair "Ed25519")
+          result (block/authority-block
+                  [[:user "alice"]]
+                  []
+                  []
+                  (.getPrivate kp))
+          blk    (:block result)]
       (t/is (some? (:hash blk)))
       (t/is (some? (:sig blk)))
-      (t/is (nil? (:prev blk))))))
+      (t/is (nil? (:prev-sig blk)))
+      (t/is (some? (:next-key blk)))
+      (t/is (some? (:next-private-key result))))))
 
 (t/deftest delegated-block-links-to-previous
-  (t/testing "delegated block links to previous hash"
-    (let [kp   (sut/generate-keypair "Ed25519")
-          b0   (block/authority-block
-                [[:user "alice"]]
-                []
-                []
-                (.getPrivate kp))
-          b1   (block/delegated-block
-                b0
-                []
-                []
-                []
-                (.getPrivate kp))]
-      (t/is (= (:hash b0) (:prev b1))))))
+  (t/testing "delegated block's prev-sig matches authority sig"
+    (let [kp  (sut/generate-keypair "Ed25519")
+          r0  (block/authority-block
+               [[:user "alice"]]
+               []
+               []
+               (.getPrivate kp))
+          b0  (:block r0)
+          r1  (block/delegated-block
+               b0 [] [] []
+               (:next-private-key r0))
+          b1  (:block r1)]
+      (t/is (sut/bytes= (:sig b0) (:prev-sig b1))))))
 
 (t/deftest verify-chain-valid
-  (t/testing "valid block chain verifies"
-    (let [kp   (sut/generate-keypair "Ed25519")
-          pub  (.getPublic kp)
-          b0   (block/authority-block
-                [[:user "alice"]]
-                []
-                []
-                (.getPrivate kp))
-          b1   (block/delegated-block
-                b0
-                []
-                []
-                []
-                (.getPrivate kp))]
+  (t/testing "valid ephemeral key chain verifies"
+    (let [kp  (sut/generate-keypair "Ed25519")
+          pub (.getPublic kp)
+          r0  (block/authority-block
+               [[:user "alice"]] [] []
+               (.getPrivate kp))
+          r1  (block/delegated-block
+               (:block r0) [] [] []
+               (:next-private-key r0))]
       (t/is (true?
-             (block/verify-chain [b0 b1] pub))))))
+             (block/verify-chain
+              [(:block r0) (:block r1)] pub))))))
 
 (t/deftest verify-chain-fails-on-tampered-block
   (t/testing "tampered block breaks chain"
-    (let [kp   (sut/generate-keypair "Ed25519")
-          pub  (.getPublic kp)
-          b0   (block/authority-block
-                [[:user "alice"]]
-                []
-                []
-                (.getPrivate kp))
-          b1   (assoc
-                (block/delegated-block
-                 b0
-                 []
-                 []
-                 []
-                 (.getPrivate kp))
-                :facts [[:user "mallory"]])]
+    (let [kp  (sut/generate-keypair "Ed25519")
+          pub (.getPublic kp)
+          r0  (block/authority-block
+               [[:user "alice"]] [] []
+               (.getPrivate kp))
+          r1  (block/delegated-block
+               (:block r0) [] [] []
+               (:next-private-key r0))
+          b1-tampered (assoc (:block r1) :facts [[:user "mallory"]])]
       (t/is (false?
-             (block/verify-chain [b0 b1] pub))))))
+             (block/verify-chain
+              [(:block r0) b1-tampered] pub))))))
 
 (t/deftest verify-chain-fails-on-reordered-blocks
   (t/testing "reordering blocks breaks chain"
-    (let [kp   (sut/generate-keypair "Ed25519")
-          pub  (.getPublic kp)
-          b0   (block/authority-block
-                [[:user "alice"]]
-                []
-                []
-                (.getPrivate kp))
-          b1   (block/delegated-block
-                b0
-                []
-                []
-                []
-                (.getPrivate kp))]
+    (let [kp  (sut/generate-keypair "Ed25519")
+          pub (.getPublic kp)
+          r0  (block/authority-block
+               [[:user "alice"]] [] []
+               (.getPrivate kp))
+          r1  (block/delegated-block
+               (:block r0) [] [] []
+               (:next-private-key r0))]
       (t/is (false?
-             (block/verify-chain [b1 b0] pub))))))
+             (block/verify-chain
+              [(:block r1) (:block r0)] pub))))))
+
+(t/deftest ephemeral-keys-are-unique-per-block
+  (t/testing "each block gets a distinct ephemeral public key"
+    (let [kp  (sut/generate-keypair "Ed25519")
+          r0  (block/authority-block
+               [[:user "alice"]] [] []
+               (.getPrivate kp))
+          r1  (block/delegated-block
+               (:block r0) [] [] []
+               (:next-private-key r0))
+          r2  (block/delegated-block
+               (:block r1) [] [] []
+               (:next-private-key r1))]
+      (t/is (not (sut/bytes=
+                  (:next-key (:block r0))
+                  (:next-key (:block r1)))))
+      (t/is (not (sut/bytes=
+                  (:next-key (:block r1))
+                  (:next-key (:block r2))))))))
+
+(t/deftest forged-block-with-wrong-key-rejected
+  (t/testing "block signed with wrong ephemeral key fails verification"
+    (let [kp       (sut/generate-keypair "Ed25519")
+          pub      (.getPublic kp)
+          r0       (block/authority-block
+                    [[:user "alice"]] [] []
+                    (.getPrivate kp))
+          ;; Forge a block with a random key instead of the ephemeral key
+          rogue-kp (sut/generate-keypair "Ed25519")
+          r1-forged (block/delegated-block
+                     (:block r0) [] [] []
+                     (.getPrivate rogue-kp))]
+      (t/is (false?
+             (block/verify-chain
+              [(:block r0) (:block r1-forged)] pub))))))

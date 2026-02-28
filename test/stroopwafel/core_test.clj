@@ -19,8 +19,7 @@
           token (sut/attenuate
                  token
                  {:checks [{:id    :read-only
-                            :query [[:right "alice" :read "file-1"]]}]}
-                 {:private-key (:priv kp)})
+                            :query [[:right "alice" :read "file-1"]]}]})
 
           ;; Verify chain integrity
           verified? (sut/verify token {:public-key (:pub kp)})]
@@ -42,8 +41,7 @@
       (let [token-with-admin
             (sut/attenuate
              token
-             {:facts [[:admin "alice"]]}
-             {:private-key (:priv kp)})
+             {:facts [[:admin "alice"]]})
 
             result (sut/evaluate token-with-admin
                                  :authorizer
@@ -59,8 +57,7 @@
                  {:private-key (:priv kp)})
           token (sut/attenuate
                  token
-                 {:checks [{:id :c1 :query [[:user "alice"]]}]}
-                 {:private-key (:priv kp)})
+                 {:checks [{:id :c1 :query [[:user "alice"]]}]})
           ids (sut/revocation-ids token)]
       (t/is (= 2 (count ids)))
       (t/is (not= (first ids) (second ids))))))
@@ -84,8 +81,7 @@
           ids1 (sut/revocation-ids token1)
           token2 (sut/attenuate
                   token1
-                  {:checks [{:id :c1 :query [[:user "alice"]]}]}
-                  {:private-key (:priv kp)})
+                  {:checks [{:id :c1 :query [[:user "alice"]]}]})
           ids2 (sut/revocation-ids token2)]
       (t/is (= 1 (count ids1)))
       (t/is (= 2 (count ids2)))
@@ -186,8 +182,7 @@
                  {:private-key (:priv kp)})
           token (sut/attenuate
                  token
-                 {:facts [[:role "alice" :admin]]}
-                 {:private-key (:priv kp)})
+                 {:facts [[:role "alice" :admin]]})
           ;; Policy queries delegated fact — should not match
           result (sut/evaluate token
                                :authorizer
@@ -206,3 +201,24 @@
           result (sut/evaluate token :explain? true)]
       (t/is (true? (:valid? result)))
       (t/is (some? (:explain result))))))
+
+(t/deftest ephemeral-key-attenuate-no-explicit-key
+  (t/testing "Attenuate uses token's proof — no explicit key needed"
+    (let [kp (sut/new-keypair)
+          token (sut/issue
+                 {:facts [[:user "alice"]]}
+                 {:private-key (:priv kp)})
+          ;; Attenuate without providing any key
+          token2 (sut/attenuate token {:checks [{:id :c1 :query [[:user "alice"]]}]})
+          token3 (sut/attenuate token2 {:checks [{:id :c2 :query [[:user "alice"]]}]})]
+      (t/is (= 3 (count (:blocks token3))))
+      (t/is (true? (sut/verify token3 {:public-key (:pub kp)}))))))
+
+(t/deftest token-contains-proof
+  (t/testing "Token contains ephemeral private key as proof"
+    (let [kp (sut/new-keypair)
+          token (sut/issue
+                 {:facts [[:user "alice"]]}
+                 {:private-key (:priv kp)})]
+      (t/is (some? (:proof token)))
+      (t/is (instance? java.security.PrivateKey (:proof token))))))

@@ -20,6 +20,10 @@
 (defn issue
   "Creates a new authority token.
 
+   Generates a fresh ephemeral keypair for future attenuation. The
+   ephemeral public key is embedded in the authority block; the
+   ephemeral private key is stored in the token as `:proof`.
+
    Arguments:
      - payload map with:
        |||
@@ -28,71 +32,79 @@
        | `:rules`  | vector of rule maps
        | `:checks` | vector of check maps (optional)
      - opts map with:
-         `:private-key` (required)
+         `:private-key` — root private key (required)
 
    Returns:
-     A vector containing the initial signed authority block."
+     A token map:
+     ```clojure
+     {:blocks [authority-block]
+      :proof  <ephemeral-private-key>}
+     ```"
   [{:keys [facts rules checks] :as _blocks} {:keys [private-key] :as _opts}]
-  (let [authority
+  (let [{:keys [block next-private-key]}
         (block/authority-block
          (or facts [])
          (or rules [])
          (or checks [])
          private-key)]
-    [authority]))
+    {:blocks [block]
+     :proof  next-private-key}))
 
 (defn attenuate
   "Appends a new delegated block to an existing token.
 
+   Uses the token's proof (ephemeral private key) to sign the new
+   block. Generates a fresh ephemeral keypair — the new token's
+   proof enables further attenuation.
+
+   No explicit key argument needed — whoever holds the token can
+   attenuate it. This is the core capability model.
+
    Arguments:
-     - `token`   : vector of blocks (authority -> latest)
+     - `token`   : token map with `:blocks` and `:proof`
      - payload : map with optional keys:
        |||
        |:-|:-|
        |`:facts`| vector of fact tuples
        |`:rules`| vector of rule maps
        |`:checks`| vector of check maps (optional)
-     - opts map with:
-         `:private-key` (required)
 
    Returns:
-     A new token vector with the additional delegated block appended."
-  [token {:keys [facts rules checks] :as _blocks} {:keys [private-key] :as _opts}]
-  (let [previous-block (peek token)
-        new-block
+     A new token map with the additional block appended."
+  [token {:keys [facts rules checks] :as _blocks}]
+  (let [prev-block (peek (:blocks token))
+        {:keys [block next-private-key]}
         (block/delegated-block
-         previous-block
+         prev-block
          (or facts [])
          (or rules [])
          (or checks [])
-         private-key)]
-    (conj token new-block)))
+         (:proof token))]
+    {:blocks (conj (:blocks token) block)
+     :proof  next-private-key}))
 
 (defn verify
   "Verifies the integrity and authenticity of a token.
 
+   Validates the ephemeral key chain: the authority block is verified
+   with the root public key, each subsequent block is verified with
+   the previous block's ephemeral public key.
+
    Arguments:
-     - `token` : vector of blocks
-     - `opts`  : map with:
-        `:public-key` (required)
+     - `token` : token map with `:blocks`
+     - `opts`  : map with `:public-key` (root public key)
 
    Returns:
      - `true` if the block chain is valid
-     - `false` otherwise
-
-   Performs cryptographic verification only.
-   It does not evaluate authorization logic.
-
-   Logical evaluation must only be performed after this
-   function returns true."
+     - `false` otherwise"
   [token {:keys [public-key] :as _opts}]
-  (block/verify-chain token public-key))
+  (block/verify-chain (:blocks token) public-key))
 
 (defn evaluate
   "Evaluates an already verified token against its internal checks.
 
    Arguments:
-     - `token` : vector of blocks (binary form)
+     - `token` : token map with `:blocks`
      - keyword args:
          `:explain?`   (boolean) — include proof tree in result
          `:authorizer` (map)     — authorizer context with:
@@ -119,7 +131,7 @@
   (let [core-token
         {:blocks
          (mapv #(select-keys % [:facts :rules :checks])
-               token)}]
+               (:blocks token))}]
     (datalog/eval-token core-token
                         :explain? explain?
                         :authorizer authorizer)))
@@ -136,7 +148,7 @@
    subsequent blocks too).
 
    Arguments:
-     - `token` : vector of blocks
+     - `token` : token map with `:blocks`
 
    Returns:
      A vector of hex strings, one per block, in chain order."
@@ -144,7 +156,7 @@
   (mapv (fn [block]
           (let [sig-hash (crypto/sha256 (:sig block))]
             (apply str (map #(format "%02x" %) sig-hash))))
-        token))
+        (:blocks token)))
 
 (defn graph
   "Converts an explain tree into a graph representation.
