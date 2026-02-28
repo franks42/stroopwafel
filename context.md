@@ -23,8 +23,9 @@ blocks wrapping authorized data.
    - Datalog authorization engine with proper scoping ✓ Done (v0.2.0)
    - Block isolation / attenuation (new blocks can only restrict, never expand) ✓ Done (v0.2.0)
    - Negative constraints (deny rules) ✓ Done (v0.2.0)
+   - Revocation IDs ✓ Done (v0.3.0)
+   - Authorizer policies (allow/deny) ✓ Done (v0.3.0)
    - Third-party blocks
-   - Revocation support
    - Token sealing
 
 3. **Multi-platform** — JVM, Babashka, and potentially ClojureScript/nbb,
@@ -51,7 +52,7 @@ KEX limitations addressed:
 - ~~No block isolation (delegated blocks can expand authority)~~ ✓ Fixed in v0.2.0
 - ~~No negative constraints or deny rules~~ ✓ Fixed in v0.2.0
 - ~~Ad-hoc canonicalization (not CEDN)~~ ✓ Fixed in v0.1.0
-- No revocation
+- ~~No revocation~~ ✓ Fixed in v0.3.0
 - No third-party blocks
 - JVM-only
 
@@ -81,7 +82,7 @@ CEDN 1.2.0 adds native byte array support via `#bytes "hex"` tagged literal,
 which was specifically requested for stroopwafel's signing pipeline (SHA-256
 hashes and Ed25519 signatures are byte arrays).
 
-## Current Architecture (v0.2.0)
+## Current Architecture (v0.3.0)
 
 ```
 stroopwafel/
@@ -93,7 +94,7 @@ stroopwafel/
 │   └── bytes-support.md        ← CEDN #bytes feature request (implemented)
 ├── src/
 │   └── stroopwafel/
-│       ├── core.clj            ← public API: new-keypair, issue, attenuate, verify, evaluate, graph
+│       ├── core.clj            ← public API: new-keypair, issue, attenuate, verify, evaluate, revocation-ids, graph
 │       ├── block.clj           ← block chain signing and verification
 │       ├── crypto.clj          ← Ed25519, SHA-256, CEDN canonical-bytes
 │       ├── datalog.clj         ← Datalog engine with fact store, scoping, origin tracking
