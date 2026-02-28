@@ -1,7 +1,7 @@
-# Biscuit Gap Analysis — Stroopwafel v0.3.0
+# Biscuit Gap Analysis — Stroopwafel v0.4.0
 
 Current status of Stroopwafel against the Biscuit specification (v3.3).
-Updated Feb 2026 after Phase 3a completion.
+Updated Feb 2026 after sealed tokens completion.
 
 See `biscuit-kex-analysis.md` for the original KEX research and Biscuit
 background. This document tracks only the gap status.
@@ -25,7 +25,7 @@ background. This document tracks only the gap status.
 | Datalog expressions | Yes | **No** | Open — **high priority** |
 | Revocation IDs | Yes | ✓ Yes | Done (v0.3.0) |
 | Authorizer policies | Yes | ✓ Yes | Done (v0.3.0) |
-| Sealed tokens | Yes | **No** | Open — easy (depends on ephemeral keys) |
+| Sealed tokens | Yes | ✓ Yes | Done (v0.4.0) |
 | Third-party blocks | Yes | **No** | Open — medium |
 | Cross-platform | Multi-lang | JVM only | Open — bb ready, CLJS needs work |
 
@@ -104,9 +104,24 @@ Token format: `{:blocks [...] :proof <ephemeral-private-key>}`. Whoever holds
 the token can attenuate — no separate key argument needed. The attenuation
 guarantee is now enforced by both Datalog scoping AND cryptography.
 
+### Sealed Tokens — ✓ Done (v0.4.0)
+
+`seal` signs the last block's hash with the ephemeral private key, then
+discards the key. The proof becomes `{:type :sealed :sig <bytes>}` — a
+verifiable signature, but no one can append new blocks. `attenuate` throws
+on sealed tokens. `verify` validates the seal against the last block's
+`:next-key`.
+
+No encryption needed — sealing is pure signing + key destruction.
+
+**Reversible sealing** (encrypting the private key so the sealer can later
+unseal) is deliberately not implemented. There is no realistic use case: if
+you want an attenuatable token, don't seal it. If you want a frozen token,
+seal it. Just keep the unsealed copy if you need to attenuate later.
+
 ---
 
-## Open Gaps (Phase 3b, priority order)
+## Open Gaps (priority order)
 
 ### 1. Datalog Expressions — High Priority
 
@@ -134,23 +149,7 @@ case), amount limits, or string prefix matching.
 
 **Files affected**: `datalog.clj` (major), `datalog_test.clj` (major)
 
-### 2. Sealed Tokens — Easy (ephemeral keys now implemented)
-
-**What Biscuit does**: A token can be "sealed" to prevent further attenuation.
-The seal encrypts the last ephemeral private key, making it impossible to
-append new blocks.
-
-**Current state**: No sealing mechanism. Any holder with the key can attenuate.
-
-**Implementation**: Add `:sealed?` flag or encrypt/discard the attenuation key
-material. `attenuate` should reject sealed tokens.
-
-**Note**: This depends on ephemeral keys (#1) — sealing is only meaningful when
-each block has its own key.
-
-**Files affected**: `core.clj` (minor), `block.clj` (minor)
-
-### 3. Third-Party Blocks — Medium
+### 2. Third-Party Blocks — Medium
 
 **What Biscuit does**: External parties can sign blocks included in the chain
 without seeing the full token. Enables delegated attestation ("IdP X attests
@@ -183,14 +182,12 @@ public key encode/decode. **No encryption primitives exist today.** Analysis:
 | Revocation IDs | No | `sha256` already exists — derive from `:sig` bytes |
 | Authorizer policies | No | No crypto involved — pure Datalog evaluation |
 | Ephemeral keys | No | `generate-keypair` already exists — change is structural (key threading) |
-| Sealed tokens | **Maybe** | Option A: HMAC-SHA256 (simple, irreversible seal) — discard ephemeral key, store HMAC proof. Option B: AES-GCM (reversible seal) — encrypt ephemeral key so original sealer can unseal. Option A is sufficient for most use cases. |
+| Sealed tokens | No | Implemented as sign + discard key. No encryption needed. Reversible sealing deliberately not supported — no realistic use case. |
 | Third-party blocks | No | `sign`/`verify` already exist — needs per-block public key validation |
 | Datalog expressions | No | No crypto involved — pure evaluation |
 
-**Bottom line**: Sealed tokens are the only feature that may require a new crypto
-primitive (HMAC-SHA256 or AES-GCM). Everything else is covered by existing
-sign/verify/hash operations. The sealed tokens decision can be deferred until
-ephemeral keys are implemented (sealing depends on ephemeral keys).
+**Bottom line**: No remaining feature requires new crypto primitives. All open
+gaps (Datalog expressions, third-party blocks) are pure logic, not crypto.
 
 ---
 

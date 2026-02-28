@@ -10,7 +10,7 @@ from [KEX](https://github.com/serefayar/kex).
 Like a stroopwafel: two layers with something sealed between them — signed
 blocks wrapping authorized data.
 
-**Current version**: v0.3.0 (Phase 3a complete)
+**Current version**: v0.4.0 (Phase 3b complete — sealed tokens)
 
 ## Goals
 
@@ -25,8 +25,9 @@ blocks wrapping authorized data.
    - Negative constraints (deny rules) ✓ Done (v0.2.0)
    - Revocation IDs ✓ Done (v0.3.0)
    - Authorizer policies (allow/deny) ✓ Done (v0.3.0)
+   - Ephemeral keys per block ✓ Done (v0.3.0)
+   - Token sealing ✓ Done (v0.4.0)
    - Third-party blocks
-   - Token sealing
 
 3. **Multi-platform** — JVM, Babashka, and potentially ClojureScript/nbb,
    following the same .cljc patterns as CEDN.
@@ -82,7 +83,7 @@ CEDN 1.2.0 adds native byte array support via `#bytes "hex"` tagged literal,
 which was specifically requested for stroopwafel's signing pipeline (SHA-256
 hashes and Ed25519 signatures are byte arrays).
 
-## Current Architecture (v0.3.0)
+## Current Architecture (v0.4.0)
 
 ```
 stroopwafel/
@@ -94,20 +95,20 @@ stroopwafel/
 │   └── bytes-support.md        ← CEDN #bytes feature request (implemented)
 ├── src/
 │   └── stroopwafel/
-│       ├── core.clj            ← public API: new-keypair, issue, attenuate, verify, evaluate, revocation-ids, graph
+│       ├── core.clj            ← public API: new-keypair, issue, attenuate, seal, verify, evaluate, revocation-ids, graph
 │       ├── block.clj           ← block chain signing and verification
 │       ├── crypto.clj          ← Ed25519, SHA-256, key encode/decode, CEDN canonical-bytes
 │       ├── datalog.clj         ← Datalog engine with fact store, scoping, origin tracking
 │       └── graph.clj           ← explain tree → graph visualization
 └── test/
     └── stroopwafel/
-        ├── core_test.clj       ← 14 tests (e2e, revocation, policies, ephemeral)
+        ├── core_test.clj       ← 19 tests (e2e, revocation, policies, ephemeral, seal)
         ├── crypto_test.clj     ← 15 tests (crypto, key encode/decode, ephemeral chain)
         ├── datalog_test.clj    ← 19 tests (10 original + 9 scoping)
         └── graph_test.clj      ← 5 tests
 ```
 
-53 tests, 97 assertions. clj-kondo clean, cljfmt clean.
+58 tests, 105 assertions. clj-kondo clean, cljfmt clean.
 
 ## Dependencies
 
@@ -162,6 +163,11 @@ CEDN itself has zero transitive deps.
    `{:blocks [...] :proof eph-sk}`. Whoever holds the token can attenuate —
    the attenuation guarantee is enforced by both Datalog scoping AND crypto.
 
+10. **Sealed tokens**: `seal` signs the last block's hash with the ephemeral
+    key, then discards it. Proof becomes `{:type :sealed :sig <bytes>}`.
+    No encryption — pure signing + key destruction. Reversible sealing
+    deliberately not supported (no realistic use case).
+
 ## Authorizer API
 
 The `evaluate` function accepts an `:authorizer` keyword argument:
@@ -196,9 +202,23 @@ Each ID is the SHA-256 hash of the block's Ed25519 signature. Revoking any
 block's ID invalidates the token (append-only chain means revoking an earlier
 block invalidates all subsequent blocks).
 
+## Seal API
+
+```clojure
+(def sealed (stroopwafel.core/seal token))
+;; => {:blocks [...] :proof {:type :sealed :sig <bytes>}}
+
+(stroopwafel.core/sealed? sealed)  ;; => true
+(stroopwafel.core/verify sealed {:public-key root-pk})  ;; => true
+(stroopwafel.core/attenuate sealed {...})  ;; => throws
+```
+
+Sealing is irreversible by design. If you need to attenuate later, keep the
+unsealed token.
+
 ## Biscuit Parity Status
 
-| Feature | Biscuit | Stroopwafel v0.3.0 | Gap |
+| Feature | Biscuit | Stroopwafel v0.4.0 | Gap |
 |---------|---------|-------------------|-----|
 | Ed25519 signatures | Yes | ✓ | — |
 | Block chain | Yes | ✓ | — |
@@ -208,11 +228,11 @@ block invalidates all subsequent blocks).
 | Authorizer policies | Yes | ✓ | — |
 | Scoped + fixpoint rules | Yes | ✓ | — |
 | Revocation IDs | Yes | ✓ | — |
+| Ephemeral keys | Yes | ✓ | — |
+| Sealed tokens | Yes | ✓ | — |
 | Canonical serialization | Protobuf | ✓ CEDN | Different wire format |
 | Proof visualization | No | ✓ | Stroopwafel-only feature |
-| Ephemeral keys | Yes | ✓ | — |
 | Datalog expressions | Yes | No | **High** — needed for time expiry |
-| Sealed tokens | Yes | No | Easy (ephemeral keys done) |
 | Third-party blocks | Yes | No | Medium — advanced pattern |
 | Cross-platform | Multi-lang | JVM only | Phase 4 (bb ready) |
 
@@ -261,13 +281,19 @@ block invalidates all subsequent blocks).
 - ✓ Public key encode/decode (X.509) in crypto.clj
 - ✓ 5 new tests (ephemeral uniqueness, forged block rejection, chain verify)
 
-### Phase 3c: Remaining Parity (priority order)
+### Phase 3c: Sealed Tokens ✓ (v0.4.0)
+- ✓ `seal` signs last block hash with ephemeral key, discards key
+- ✓ `sealed?` predicate, `attenuate` throws on sealed tokens
+- ✓ `verify` validates seal signature against last block's next-key
+- ✓ No encryption needed — pure signing + key destruction
+- ✓ Reversible sealing deliberately not supported (no realistic use case)
+- ✓ 5 new tests (seal-verifies, rejects-attenuate, evaluates-same, double-seal, chain)
+
+### Phase 3d: Remaining Parity (priority order)
 1. **Datalog expressions** — arithmetic, string ops, date comparisons, built-in
    functions. Time-based token expiry (`$time < 2026-03-01`) is the #1
    real-world use case that depends on this.
-2. **Sealed tokens** — freeze token to prevent further attenuation. Ephemeral
-   keys are now implemented. May need HMAC-SHA256 or AES-GCM.
-3. **Third-party blocks** — external parties sign blocks for delegated
+2. **Third-party blocks** — external parties sign blocks for delegated
    attestation. Advanced pattern, lower priority.
 
 ### Phase 4: Multi-platform
