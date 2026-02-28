@@ -61,6 +61,37 @@
   [store]
   (count store))
 
+;;; ---- Scope filtering ----
+
+(defn trusted-origins
+  "Returns the set of origin indices trusted by the given block.
+
+   - Authority block (0): trusts `#{0 :authorizer}`
+   - Block N: trusts `#{0 N :authorizer}`
+   - Authorizer (nil): trusts `#{0 :authorizer}`"
+  [block-index]
+  (if (and block-index (pos? block-index))
+    #{0 block-index :authorizer}
+    #{0 :authorizer}))
+
+(defn visible?
+  "Returns true if a fact with the given origin set is visible
+   to a block with the given trusted origin set.
+
+   A fact is visible when its origin is a subset of trusted origins."
+  [fact-origin trusted]
+  (set/subset? fact-origin trusted))
+
+(defn facts-for-scope
+  "Returns a sequence of `[origin fact]` pairs visible in the given scope.
+
+   Filters the store to only include facts whose origin sets are subsets
+   of the trusted set."
+  [store trusted]
+  (for [[fact origin] store
+        :when (visible? origin trusted)]
+    [origin fact]))
+
 (defn unify
   "Attempts to unify a pattern with a concrete fact, producing
    both variable bindings and proof metadata.
