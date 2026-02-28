@@ -88,7 +88,8 @@ stroopwafel/
 ├── deps.edn
 ├── context.md                  ← this file
 ├── docs/
-│   ├── biscuit-kex-analysis.md ← detailed analysis of Biscuit, KEX, and gaps
+│   ├── biscuit-kex-analysis.md ← original research: Biscuit, KEX, and initial gap analysis
+│   ├── biscuit-gap-analysis.md ← current gap status vs Biscuit spec
 │   └── bytes-support.md        ← CEDN #bytes feature request (implemented)
 ├── src/
 │   └── stroopwafel/
