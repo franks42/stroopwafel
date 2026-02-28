@@ -1,5 +1,6 @@
 (ns stroopwafel.datalog
   (:require
+   [clojure.set :as set]
    [clojure.string :as str]))
 
 (defn variable?
@@ -23,6 +24,42 @@
   (if-let [existing (get env var)]
     (when (= existing value) env)
     (assoc env var value)))
+
+;;; ---- Fact store with origin tracking ----
+
+(defn make-fact-store
+  "Creates an empty fact store.
+
+   A fact store maps facts to their origin sets:
+     `{fact -> origin-set}`
+
+   Origin model:
+     - Authority facts: `#{0}`
+     - Block N facts: `#{n}`
+     - Authorizer facts: `#{:authorizer}`
+     - Derived facts: union of input origins + rule block index"
+  []
+  {})
+
+(defn insert-fact
+  "Inserts a fact into the store with the given origin set.
+
+   If the fact already exists, merges origin sets via union."
+  [store fact origin]
+  (update store fact (fn [existing]
+                       (if existing
+                         (set/union existing origin)
+                         origin))))
+
+(defn insert-facts
+  "Inserts multiple facts into the store, all with the same origin set."
+  [store facts origin]
+  (reduce (fn [s f] (insert-fact s f origin)) store facts))
+
+(defn fact-count
+  "Returns the total number of unique facts in the store."
+  [store]
+  (count store))
 
 (defn unify
   "Attempts to unify a pattern with a concrete fact, producing
