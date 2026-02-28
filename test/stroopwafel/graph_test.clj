@@ -8,11 +8,11 @@
          :check-id :c1
          :result :pass
          :because
-         {:origin :derived
+         {:origin #{0}
           :fact   [:can "alice" :read "file-1"]
           :rule   :can-from-right
           :env    {'?u "alice"}
-          :proof  [{:origin :authority
+          :proof  [{:origin #{0}
                     :fact   [:right "alice" :read "file-1"]}]}}
 
         graph (sut/explain->graph explain)]
@@ -83,13 +83,13 @@
          :check-id :c3
          :result :pass
          :because
-         {:origin :derived
+         {:origin #{0}
           :fact   [:can "alice" :read "file-1"]
           :rule   :can-from-right
           :env    {}
-          :proof  [{:origin :authority
+          :proof  [{:origin #{0}
                     :fact   [:right "alice" :read "file-1"]}
-                   {:origin :authority
+                   {:origin #{0}
                     :fact   [:resource "file-1"]}]}}
 
         graph (sut/explain->graph explain)]
@@ -116,7 +116,7 @@
          :check-id :c1
          :result :pass
          :because
-         {:origin :authority
+         {:origin #{0}
           :fact   [:user "alice"]}}
 
         g1 (sut/explain->graph explain)
@@ -129,7 +129,7 @@
         {:type :check
          :check-id :c4
          :result :pass
-         :because {:origin :authority
+         :because {:origin #{0}
                    :fact [:admin "alice"]}}
 
         graph (sut/explain->graph explain)]

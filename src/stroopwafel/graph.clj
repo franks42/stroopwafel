@@ -37,21 +37,30 @@
    :kind :missing-fact
    :fact (:fact explain-node)})
 
+(defn- derived-node?
+  "Returns true if the explain node represents a derived fact.
+   Derived facts are identified by the presence of a :rule key."
+  [explain-node]
+  (contains? explain-node :rule))
+
 (defn explain-node->graph-node
   "Converts a single explain node into a graph node map.
 
    This function does not handle children; it only normalizes
-   the current node into a graph-friendly representation."
+   the current node into a graph-friendly representation.
+
+   Origin format: sets (#{0}, #{0 1}, etc.) for facts,
+   :reject-pass for deny rule passes."
   [id explain-node]
   (cond
     ;; check node
     (= (:type explain-node) :check) (check-node id explain-node)
-    ;; derived fact
-    (= (:origin explain-node) :derived) (derived-fact-node id explain-node)
-    ;; authority fact
-    (= (:origin explain-node) :authority) (authority-fact-node id explain-node)
+    ;; derived fact (has :rule key)
+    (derived-node? explain-node) (derived-fact-node id explain-node)
     ;; missing fact (synthetic)
     (= (:kind explain-node) :missing) (missing-fact id explain-node)
+    ;; authority/block fact (origin is a set or keyword)
+    (:origin explain-node) (authority-fact-node id explain-node)
 
     :else
     (throw (ex-info "Unknown explain node shape"
@@ -98,7 +107,7 @@
                         :label :missing})}])
 
       ;; DERIVED FACT -> proof list
-      (= (:origin explain-node) :derived)
+      (derived-node? explain-node)
       (reduce
        (fn [[_ ctr g] proof-node]
          (let [[pid next-ctr pg] (build-graph proof-node ctr)]
