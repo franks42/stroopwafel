@@ -187,8 +187,6 @@ CEDN itself has zero transitive deps.
 
 ## Authorizer API
 
-## Authorizer API
-
 The `evaluate` function accepts an `:authorizer` keyword argument:
 
 ```clojure
