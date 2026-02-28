@@ -10,8 +10,6 @@
   [(keyword (str "n" counter))
    (inc counter)])
 
-
-
 (defn check-node
   [id explain-node]
   {:id       id

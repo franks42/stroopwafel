@@ -30,7 +30,6 @@
 
     :else x))
 
-
 (defn bytes=
   "Compares two byte arrays for content equality.
 
@@ -98,21 +97,6 @@
     (.update sig data)
     (.verify sig signature)))
 
-(defn- bytes->hex
-  "Converts a byte array to a lowercase hex string."
-  [^bytes bs]
-  (let [sb (StringBuilder.)]
-    (doseq [b bs]
-      (.append sb (format "%02x" (bit-and (int b) 0xff))))
-    (.toString sb)))
-
-(defn- prepare-for-serialization
-  "Converts byte arrays in a block payload to hex strings so that
-   all values are serializable by CEDN."
-  [block]
-  (cond-> block
-    (bytes? (:prev block)) (update :prev bytes->hex)))
-
 (defn encode-block
   "Encodes a block payload into a canonical byte representation
    using CEDN (Canonical EDN).
@@ -122,4 +106,4 @@
      - stable across JVM runs and platforms
      - independent of map ordering"
   [block]
-  (cedn/canonical-bytes (prepare-for-serialization block)))
+  (cedn/canonical-bytes block))

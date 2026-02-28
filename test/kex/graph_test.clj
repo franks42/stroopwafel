@@ -44,7 +44,6 @@
                {:from :n2 :to :n3 :label :because}}
              (set (:edges graph))))))
 
-
 (t/deftest explain->graph-fail-missing
   (let [explain
         {:type :check
@@ -77,7 +76,6 @@
     ;; edge
     (t/is (= [{:from :n1 :to :n2 :label :missing}]
              (:edges graph)))))
-
 
 (t/deftest explain->graph-multiple-proofs
   (let [explain
@@ -112,7 +110,6 @@
       (t/is (= 2 (count outgoing)))
       (t/is (every? #(= :because (:label %)) outgoing)))))
 
-
 (t/deftest explain->graph-deterministic-ids
   (let [explain
         {:type :check
@@ -126,7 +123,6 @@
         g2 (sut/explain->graph explain)]
 
     (t/is (= g1 g2))))
-
 
 (t/deftest explain->graph-authority-only
   (let [explain

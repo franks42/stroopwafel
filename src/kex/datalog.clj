@@ -87,7 +87,6 @@
    [{:env {} :proof []}]
    body))
 
-
 (defn instantiate
   "Instantiates a rule head using a variable environment.
 
@@ -166,7 +165,6 @@
    Checks never produce new facts; they only validate conditions."
   [checks store]
   (map (fn [c] (eval-check c store)) checks))
-
 
 (defn eval-token
   "Evaluates an authorization token consisting of one or more blocks.

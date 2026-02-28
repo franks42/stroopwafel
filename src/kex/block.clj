@@ -1,7 +1,6 @@
 (ns kex.block
   (:require [kex.crypto :as c]))
 
-
 (defn authority-block
   "Creates and signs the initial (authority) block of a token chain.
 
@@ -32,7 +31,6 @@
     (assoc payload
            :hash hash
            :sig  sig)))
-
 
 (defn delegated-block
   "Creates and signs a new block that extends an existing block chain.
@@ -66,7 +64,6 @@
     (assoc payload
            :hash hash
            :sig  sig)))
-
 
 (defn verify-chain
   "Verifies the integrity and authenticity of a sequence of blocks.

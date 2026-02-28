@@ -21,13 +21,12 @@
            (sut/canonical [1 2 3])
            (sut/canonical [3 2 1])))))
 
-
 (t/deftest sha256-deterministic-test
   (t/testing "same input yields same hash"
     (let [data (.getBytes "hello")]
       (t/is (sut/bytes=
-            (sut/sha256 data)
-            (sut/sha256 data))))))
+             (sut/sha256 data)
+             (sut/sha256 data))))))
 
 (t/deftest sign-and-verify-test
   (t/testing "valid signature verifies"
@@ -35,7 +34,7 @@
           msg  (.getBytes "important-data")
           sig  (sut/sign (.getPrivate kp) msg)]
       (t/is (true?
-            (sut/verify
+             (sut/verify
               (.getPublic kp)
               msg
               sig))))))
@@ -46,7 +45,7 @@
           msg  (.getBytes "important-data")
           sig  (sut/sign (.getPrivate kp) msg)]
       (t/is (false?
-            (sut/verify
+             (sut/verify
               (.getPublic kp)
               (.getBytes "tampered-data")
               sig))))))
@@ -58,20 +57,19 @@
           msg  (.getBytes "important-data")
           sig  (sut/sign (.getPrivate kp1) msg)]
       (t/is (false?
-            (sut/verify
+             (sut/verify
               (.getPublic kp2)
               msg
               sig))))))
-
 
 (t/deftest authority-block-test
   (t/testing "authority block is self-contained and signed"
     (let [kp   (sut/generate-keypair "Ed25519")
           blk  (block/authority-block
-                 [[:user "alice"]]
-                 []
-                 []
-                 (.getPrivate kp))]
+                [[:user "alice"]]
+                []
+                []
+                (.getPrivate kp))]
       (t/is (some? (:hash blk)))
       (t/is (some? (:sig blk)))
       (t/is (nil? (:prev blk))))))
@@ -80,16 +78,16 @@
   (t/testing "delegated block links to previous hash"
     (let [kp   (sut/generate-keypair "Ed25519")
           b0   (block/authority-block
-                 [[:user "alice"]]
-                 []
-                 []
-                 (.getPrivate kp))
+                [[:user "alice"]]
+                []
+                []
+                (.getPrivate kp))
           b1   (block/delegated-block
-                 b0
-                 []
-                 []
-                 []
-                 (.getPrivate kp))]
+                b0
+                []
+                []
+                []
+                (.getPrivate kp))]
       (t/is (= (:hash b0) (:prev b1))))))
 
 (t/deftest verify-chain-valid
@@ -97,53 +95,53 @@
     (let [kp   (sut/generate-keypair "Ed25519")
           pub  (.getPublic kp)
           b0   (block/authority-block
-                 [[:user "alice"]]
-                 []
-                 []
-                 (.getPrivate kp))
+                [[:user "alice"]]
+                []
+                []
+                (.getPrivate kp))
           b1   (block/delegated-block
-                 b0
-                 []
-                 []
-                 []
-                 (.getPrivate kp))]
+                b0
+                []
+                []
+                []
+                (.getPrivate kp))]
       (t/is (true?
-            (block/verify-chain [b0 b1] pub))))))
+             (block/verify-chain [b0 b1] pub))))))
 
 (t/deftest verify-chain-fails-on-tampered-block
   (t/testing "tampered block breaks chain"
     (let [kp   (sut/generate-keypair "Ed25519")
           pub  (.getPublic kp)
           b0   (block/authority-block
-                 [[:user "alice"]]
+                [[:user "alice"]]
+                []
+                []
+                (.getPrivate kp))
+          b1   (assoc
+                (block/delegated-block
+                 b0
+                 []
                  []
                  []
                  (.getPrivate kp))
-          b1   (assoc
-                 (block/delegated-block
-                   b0
-                   []
-                   []
-                   []
-                   (.getPrivate kp))
-                 :facts [[:user "mallory"]])]
+                :facts [[:user "mallory"]])]
       (t/is (false?
-            (block/verify-chain [b0 b1] pub))))))
+             (block/verify-chain [b0 b1] pub))))))
 
 (t/deftest verify-chain-fails-on-reordered-blocks
   (t/testing "reordering blocks breaks chain"
     (let [kp   (sut/generate-keypair "Ed25519")
           pub  (.getPublic kp)
           b0   (block/authority-block
-                 [[:user "alice"]]
-                 []
-                 []
-                 (.getPrivate kp))
+                [[:user "alice"]]
+                []
+                []
+                (.getPrivate kp))
           b1   (block/delegated-block
-                 b0
-                 []
-                 []
-                 []
-                 (.getPrivate kp))]
+                b0
+                []
+                []
+                []
+                (.getPrivate kp))]
       (t/is (false?
-            (block/verify-chain [b1 b0] pub))))))
+             (block/verify-chain [b1 b0] pub))))))
