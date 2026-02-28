@@ -93,7 +93,8 @@ stroopwafel/
 ├── docs/
 │   ├── biscuit-kex-analysis.md ← original research: Biscuit, KEX, and initial gap analysis
 │   ├── biscuit-gap-analysis.md ← current gap status vs Biscuit spec
-│   └── bytes-support.md        ← CEDN #bytes feature request (implemented)
+│   ├── bytes-support.md        ← CEDN #bytes feature request (implemented)
+│   └── datalog-expressions-clj-design.md ← expression design: :when, :let, built-ins
 ├── src/
 │   └── stroopwafel/
 │       ├── core.clj            ← public API: new-keypair, issue, attenuate, seal, verify, evaluate, revocation-ids, graph
@@ -223,6 +224,47 @@ block invalidates all subsequent blocks).
 
 Sealing is irreversible by design. If you need to attenuate later, keep the
 unsealed token.
+
+## Expression API
+
+Rules, checks, and policies support `:when` guard clauses and `:let` computed
+bindings. Guards are Clojure forms evaluated by a whitelisted mini-interpreter
+— no `eval`, no namespace resolution.
+
+```clojure
+;; Time-based token expiry
+(stroopwafel.core/issue
+  {:facts  [[:right "alice" :read "/data"]]
+   :checks '[{:id    :check-expiry
+              :query [[:time ?t]]
+              :when  [(< ?t 1709251200000)]}]}  ;; expires March 2024
+  {:private-key root-sk})
+
+;; Authorizer provides current time + policy with guard
+(stroopwafel.core/evaluate token
+  :authorizer {:facts    [[:time (System/currentTimeMillis)]]
+               :policies '[{:kind  :allow
+                            :query [[:right ?u :read ?r] [:amount ?a]]
+                            :when  [(<= ?a 100)]}]})
+
+;; Rule with :let computed binding
+'{:id   :compute-total
+  :head [:invoice-total ?item ?total]
+  :body [[:line-item ?item ?qty ?price]]
+  :let  [[?total (* ?qty ?price)]]
+  :when [(> ?total 0)]}
+```
+
+Available built-in functions (~35): `<` `>` `<=` `>=` `=` `not=` `+` `-` `*`
+`/` `mod` `rem` `str/starts-with?` `str/ends-with?` `str/includes?`
+`str/lower-case` `str/upper-case` `subs` `str` `not` `and` `or` `contains?`
+`empty?` `count` `string?` `number?` `keyword?` `int?` `nil?` `some?`
+`re-matches` `re-find`.
+
+Evaluation order: `eval-body` (pattern match) -> `eval-let` (compute bindings)
+-> `eval-when` (filter by guards) -> `instantiate` (produce head).
+
+See `docs/datalog-expressions-clj-design.md` for full design document.
 
 ## Biscuit Parity Status
 
