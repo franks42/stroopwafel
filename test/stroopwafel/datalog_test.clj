@@ -74,8 +74,7 @@
 
 (t/deftest eval-check-pass-test
   (let [fact-store
-        {[:can "alice" :read "file-1"]
-         {:origin :derived}}
+        {[:can "alice" :read "file-1"] #{0}}
         check {:id :c1
                :query [[:can "alice" :read "file-1"]]}
         result (sut/eval-check check fact-store)]
@@ -108,3 +107,147 @@
         result (sut/eval-token token :explain? true)]
     (t/is (false? (:valid? result)))
     (t/is (= :fail (get-in result [:explain :result])))))
+
+;;; ---- Scoping tests (ported from Biscuit model) ----
+
+(t/deftest scoped-rules-test
+  (t/testing "Rule in block 1 can't see block 2's facts"
+    (let [token {:blocks
+                 [{:facts  [[:user "alice"]]
+                   :rules  []
+                   :checks []}
+                  {:facts  []
+                   :rules  '[{:id   :derive-admin
+                              :head [:is-admin ?u]
+                              :body [[:user ?u] [:role ?u :admin]]}]
+                   :checks [{:id    :c1
+                             :query [[:is-admin "alice"]]}]}
+                  {:facts  [[:role "alice" :admin]]
+                   :rules  []
+                   :checks []}]}
+          result (sut/eval-token token)]
+      (t/is (false? (:valid? result))))))
+
+(t/deftest scoped-checks-test
+  (t/testing "Check in block 1 can't see block 2's facts"
+    (let [token {:blocks
+                 [{:facts  [[:user "alice"]]
+                   :rules  []
+                   :checks []}
+                  {:facts  []
+                   :rules  []
+                   :checks [{:id    :c1
+                             :query [[:secret "data"]]}]}
+                  {:facts  [[:secret "data"]]
+                   :rules  []
+                   :checks []}]}
+          result (sut/eval-token token)]
+      (t/is (false? (:valid? result))))))
+
+(t/deftest authorizer-scope-test
+  (t/testing "Authorizer can't see delegated block facts"
+    (let [token {:blocks
+                 [{:facts  [[:user "alice"]]
+                   :rules  []
+                   :checks []}
+                  {:facts  [[:role "alice" :admin]]
+                   :rules  []
+                   :checks []}]}
+          result (sut/eval-token token
+                                 :authorizer
+                                 {:checks [{:id    :c1
+                                            :query [[:role "alice" :admin]]}]})]
+      (t/is (false? (:valid? result))))))
+
+(t/deftest execution-scope-test
+  (t/testing "Block 2 can't see block 1's facts (only block 0 + own)"
+    (let [token {:blocks
+                 [{:facts  [[:user "alice"]]
+                   :rules  []
+                   :checks []}
+                  {:facts  [[:tag "block-1-data"]]
+                   :rules  []
+                   :checks []}
+                  {:facts  []
+                   :rules  []
+                   :checks [{:id    :c1
+                             :query [[:tag "block-1-data"]]}]}]}
+          result (sut/eval-token token)]
+      (t/is (false? (:valid? result))))))
+
+(t/deftest derived-fact-origin-test
+  (t/testing "Rule in block 1 derives fact with origin containing 1, invisible to block 0"
+    (let [token {:blocks
+                 [{:facts  [[:user "alice"]]
+                   :rules  []
+                   :checks [{:id    :c1
+                             :query [[:derived-fact "alice"]]}]}
+                  {:facts  []
+                   :rules  '[{:id   :derive
+                              :head [:derived-fact ?u]
+                              :body [[:user ?u]]}]
+                   :checks []}]}
+          result (sut/eval-token token)]
+      (t/is (false? (:valid? result))))))
+
+(t/deftest reject-if-test
+  (t/testing "Deny semantics: reject-if match = fail, no match = pass"
+    (let [store {[:admin "mallory"] #{0}}
+          ;; reject-if matches -> fail
+          check-reject {:id :deny-admin :kind :reject
+                        :query [[:admin "mallory"]]}
+          ;; reject-if doesn't match -> pass
+          check-reject-ok {:id :deny-admin :kind :reject
+                           :query [[:admin "nobody"]]}]
+      (t/is (= :fail (:result (sut/eval-check check-reject store))))
+      (t/is (= :pass (:result (sut/eval-check check-reject-ok store)))))))
+
+(t/deftest delegated-cannot-expand-authority-test
+  (t/testing "Block 1 adds admin fact, block 0's check can't see it"
+    (let [token {:blocks
+                 [{:facts  [[:user "alice"]]
+                   :rules  []
+                   :checks [{:id    :c1
+                             :query [[:admin "alice"]]}]}
+                  {:facts  [[:admin "alice"]]
+                   :rules  []
+                   :checks []}]}
+          result (sut/eval-token token)]
+      (t/is (false? (:valid? result))))))
+
+(t/deftest attenuation-chain-test
+  (t/testing "3-block progressive restriction, all checks pass"
+    (let [token {:blocks
+                 [{:facts  [[:right "alice" :read "file-1"]
+                            [:right "alice" :write "file-1"]]
+                   :rules  []
+                   :checks []}
+                  {:facts  []
+                   :rules  []
+                   :checks [{:id    :c1
+                             :query [[:right "alice" :read "file-1"]]}]}
+                  {:facts  []
+                   :rules  []
+                   :checks [{:id    :c2
+                             :query [[:right "alice" :read "file-1"]]}]}]}
+          result (sut/eval-token token)]
+      (t/is (true? (:valid? result))))))
+
+(t/deftest derived-fact-cross-block-test
+  (t/testing "Derived fact from block 1 visible to block 1 but not block 2"
+    (let [token {:blocks
+                 [{:facts  [[:user "alice"]]
+                   :rules  []
+                   :checks []}
+                  {:facts  []
+                   :rules  '[{:id   :tag-user
+                              :head [:tagged ?u]
+                              :body [[:user ?u]]}]
+                   :checks [{:id    :c1
+                             :query [[:tagged "alice"]]}]}
+                  {:facts  []
+                   :rules  []
+                   :checks [{:id    :c2
+                             :query [[:tagged "alice"]]}]}]}
+          result (sut/eval-token token)]
+      (t/is (false? (:valid? result))))))

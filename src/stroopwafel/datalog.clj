@@ -277,71 +277,141 @@
           (recur new-store (inc iteration)))))))
 
 (defn eval-check
-  "Evaluates a single authorization check against the current fact store.
+  "Evaluates a single authorization check against a fact store.
 
-   If the check passes, returns a `:pass` result with an explanation
-   rooted in the fact that satisfied the check.
+   Accepts an optional `scope` (trusted origins set) to filter which
+   facts are visible. When scope is nil, all facts in the store are used.
 
-   If the check fails, returns a `:fail` result with information about
-   the missing required fact."
-  [{:keys [id query]} fact-store]
-  (let [results (eval-body query (keys fact-store))]
-    (if (seq results)
-      ;; pass
-      (let [binding (first results)
-            fact    (instantiate (first query) (:env binding))
-            explain (get fact-store fact)]
-        {:result  :pass
-         :explain {:type     :check
-                   :check-id id
-                   :result   :pass
-                   :because  explain}})
+   Supports `:kind`:
+     - `:one` (default, check-if): passes if >= 1 match
+     - `:reject` (reject-if / deny): passes if NO match"
+  ([check fact-store]
+   (eval-check check fact-store nil))
+  ([{:keys [id query kind]} fact-store scope]
+   (let [visible (if scope
+                   (reduce (fn [m [origin fact]] (assoc m fact origin))
+                           {}
+                           (facts-for-scope fact-store scope))
+                   fact-store)
+         origin-facts (for [[fact origin] visible]
+                        [origin fact])
+         results (eval-body query origin-facts)
+         reject? (= kind :reject)]
+     (cond
+       ;; reject-if: match means FAIL
+       (and reject? (seq results))
+       {:result  :fail
+        :explain {:type     :check
+                  :check-id id
+                  :result   :fail
+                  :rejected query}}
 
-      ;; fail
-      {:result  :fail
-       :explain {:type     :check
-                 :check-id id
-                 :result   :fail
-                 :missing  query}})))
+       ;; reject-if: no match means PASS
+       (and reject? (empty? results))
+       {:result  :pass
+        :explain {:type     :check
+                  :check-id id
+                  :result   :pass
+                  :because  {:origin :reject-pass}}}
+
+       ;; check-if: match means PASS
+       (seq results)
+       (let [binding (first results)
+             fact    (instantiate (first query) (:env binding))
+             explain (get visible fact)]
+         {:result  :pass
+          :explain {:type     :check
+                    :check-id id
+                    :result   :pass
+                    :because  (or explain {:origin (:origin binding)
+                                           :fact   fact})}})
+
+       ;; check-if: no match means FAIL
+       :else
+       {:result  :fail
+        :explain {:type     :check
+                  :check-id id
+                  :result   :fail
+                  :missing  query}}))))
 
 (defn eval-checks
-  "Evaluates all checks on the final fact set.
-
-   Checks never produce new facts; they only validate conditions."
-  [checks store]
-  (map (fn [c] (eval-check c store)) checks))
+  "Evaluates all checks on the fact store with optional scope filtering."
+  ([checks store]
+   (map (fn [c] (eval-check c store)) checks))
+  ([checks store scope]
+   (map (fn [c] (eval-check c store scope)) checks)))
 
 (defn eval-token
-  "Evaluates an authorization token consisting of one or more blocks.
+  "Evaluates an authorization token with per-block scope isolation.
 
-   Each block may contribute facts, rules, and checks. The evaluation:
-    1. Collects all facts
-    2. Collects all rules
-    2. Applies rules to derive new facts
-    3. Evaluates all checks on the final facts [eval-checks]
+   Each block's facts are tagged with their block index as origin.
+   Rules fire with scope filtering — a rule in block N only sees
+   authority facts (#{0}), its own block facts (#{N}), and authorizer
+   facts (#{:authorizer}).
 
-   Returns a map with:
+   Checks are evaluated per-block with appropriate scope:
+     - Block 0 checks: scope #{0 :authorizer}
+     - Block N checks: scope #{0 N :authorizer}
+     - Authorizer checks: scope #{0 :authorizer}
+
+   Accepts optional `:authorizer` map with:
+     - `:facts`  — additional authorizer facts
+     - `:checks` — additional authorizer checks
+     - `:rules`  — additional authorizer rules
+
+   Returns:
    |||
    |:-|:-|
-   | `:valid?` | boolean authorization decision
-   | `:explain` | optional proof tree when :explain? is enabled
+   | `:valid?`  | boolean authorization decision
+   | `:explain` | optional proof tree when :explain? is enabled"
+  [{:keys [blocks] :as _token}
+   & {:keys [explain? authorizer]}]
+  (let [;; 1. Build fact store with origin tags
+        store (reduce-kv
+               (fn [s idx block]
+                 (insert-facts s (:facts block) #{idx}))
+               (make-fact-store)
+               (vec blocks))
 
-   This is the main entry point for authorization decisions."
-  [{:keys [blocks] :as _token} & {:keys [explain?]}]
-  (let [all-facts (reduce (fn [st ft]
-                            (assoc st ft {:origin :authority}))
-                          {}
-                          (mapcat :facts blocks))
-        all-rules (into [] (mapcat :rules) blocks)
-        derived (apply-rules all-rules all-facts)
-        merged (reduce #(assoc %1 (:fact %2) %2) all-facts derived)
-        results (eval-checks (mapcat :checks blocks) merged)
-        failed (first (filter #(= :fail (:result %)) results))]
+        ;; 2. Add authorizer facts
+        store (if (:facts authorizer)
+                (insert-facts store (:facts authorizer) #{:authorizer})
+                store)
+
+        ;; 3. Index rules by block
+        indexed-rules
+        (into []
+              (concat
+               (map-indexed (fn [idx block] [idx (:rules block)]) blocks)
+               (when (:rules authorizer)
+                 [[:authorizer (:rules authorizer)]])))
+
+        ;; 4. Apply rules to fixpoint with scope filtering
+        store (apply-rules-scoped indexed-rules store)
+
+        ;; 5. Evaluate checks per block with scoped visibility
+        block-results
+        (mapcat
+         (fn [idx]
+           (let [block (nth blocks idx)
+                 scope (trusted-origins idx)]
+             (eval-checks (:checks block) store scope)))
+         (range (count blocks)))
+
+        ;; 6. Evaluate authorizer checks
+        authorizer-results
+        (when (:checks authorizer)
+          (eval-checks (:checks authorizer) store (trusted-origins nil)))
+
+        all-results (concat block-results authorizer-results)
+        failed (first (filter #(= :fail (:result %)) all-results))]
     (cond
       failed
-      (as-> {:valid? false} m
-        (when explain? (assoc m :explain (:explain failed))))
+      (if explain?
+        {:valid? false :explain (:explain failed)}
+        {:valid? false})
 
       :else
-      (as-> {:valid? true} m
-        (when explain? (assoc m :explain (:explain (last results))))))))
+      (if explain?
+        {:valid? true :explain (:explain (last all-results))}
+        {:valid? true}))))
