@@ -21,7 +21,7 @@ background. This document tracks only the gap status.
 | Fixpoint rule evaluation | Yes | ✓ Yes | Done (v0.2.0) |
 | Canonical serialization | Protobuf | ✓ CEDN | Done (v0.1.0) — different wire format |
 | Proof visualization | No | ✓ Yes | Stroopwafel-only feature |
-| Ephemeral keys per block | Yes | **No** | Open — **high priority** |
+| Ephemeral keys per block | Yes | ✓ Yes | Done (v0.3.0) |
 | Datalog expressions | Yes | **No** | Open — **high priority** |
 | Revocation IDs | Yes | ✓ Yes | Done (v0.3.0) |
 | Authorizer policies | Yes | ✓ Yes | Done (v0.3.0) |
@@ -91,32 +91,24 @@ checks — policies determine the final authorization decision.
 Policies only see authority + authorizer facts (scope `#{0 :authorizer}`),
 not delegated block facts.
 
+### Ephemeral Keys Per Block — ✓ Done (v0.3.0)
+
+Each attenuation block gets a fresh Ed25519 keypair:
+- `authority-block` generates first ephemeral keypair, signs with root key
+- `delegated-block` signs with current ephemeral key, generates next keypair
+- `verify-chain` validates ephemeral key threading (block i verified with
+  block i-1's `:next-key`)
+- Each block's `:prev-sig` binds it to the previous signature
+
+Token format: `{:blocks [...] :proof <ephemeral-private-key>}`. Whoever holds
+the token can attenuate — no separate key argument needed. The attenuation
+guarantee is now enforced by both Datalog scoping AND cryptography.
+
 ---
 
 ## Open Gaps (Phase 3b, priority order)
 
-### 1. Ephemeral Keys Per Block — High Priority
-
-**What Biscuit does**: Generates a fresh Ed25519 key pair for each appended
-block. Each block's signature covers its content + the next block's public key.
-Only the holder of the current ephemeral private key can attenuate further.
-
-**Current state**: Stroopwafel reuses the same key for all blocks. Any
-attenuator who knows the signing key can forge blocks at any position in the
-chain.
-
-**Impact**: Without this, the crypto scheme is weaker than Biscuit's — the
-attenuation guarantee is enforced by Datalog scoping but not by cryptography.
-
-**Difficulty**: Medium. Requires reworking `block.clj`:
-- `authority-block` generates first ephemeral keypair
-- `delegated-block` signs with current ephemeral key, generates next keypair
-- `verify-chain` validates ephemeral key threading
-- `attenuate` API returns new ephemeral private key for further attenuation
-
-**Files affected**: `block.clj`, `core.clj`, `crypto_test.clj`
-
-### 2. Datalog Expressions — High Priority
+### 1. Datalog Expressions — High Priority
 
 **What Biscuit does**: Rule and check bodies can include expression nodes
 alongside fact patterns:
@@ -142,7 +134,7 @@ case), amount limits, or string prefix matching.
 
 **Files affected**: `datalog.clj` (major), `datalog_test.clj` (major)
 
-### 3. Sealed Tokens — Easy (depends on ephemeral keys)
+### 2. Sealed Tokens — Easy (ephemeral keys now implemented)
 
 **What Biscuit does**: A token can be "sealed" to prevent further attenuation.
 The seal encrypts the last ephemeral private key, making it impossible to
@@ -158,7 +150,7 @@ each block has its own key.
 
 **Files affected**: `core.clj` (minor), `block.clj` (minor)
 
-### 4. Third-Party Blocks — Medium
+### 3. Third-Party Blocks — Medium
 
 **What Biscuit does**: External parties can sign blocks included in the chain
 without seeing the full token. Enables delegated attestation ("IdP X attests
@@ -183,8 +175,8 @@ single-issuer use cases.
 
 ## Crypto Primitives Required
 
-Current `crypto.clj` provides: Ed25519 sign/verify, SHA-256, CEDN encoding.
-**No encryption primitives exist today.** Analysis of what each open feature needs:
+Current `crypto.clj` provides: Ed25519 sign/verify, SHA-256, CEDN encoding,
+public key encode/decode. **No encryption primitives exist today.** Analysis:
 
 | Feature | New Crypto? | What's Needed |
 |---------|-------------|---------------|

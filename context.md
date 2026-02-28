@@ -96,18 +96,18 @@ stroopwafel/
 │   └── stroopwafel/
 │       ├── core.clj            ← public API: new-keypair, issue, attenuate, verify, evaluate, revocation-ids, graph
 │       ├── block.clj           ← block chain signing and verification
-│       ├── crypto.clj          ← Ed25519, SHA-256, CEDN canonical-bytes
+│       ├── crypto.clj          ← Ed25519, SHA-256, key encode/decode, CEDN canonical-bytes
 │       ├── datalog.clj         ← Datalog engine with fact store, scoping, origin tracking
 │       └── graph.clj           ← explain tree → graph visualization
 └── test/
     └── stroopwafel/
-        ├── core_test.clj       ← 12 tests (e2e, revocation IDs, policies)
-        ├── crypto_test.clj     ← 12 tests
+        ├── core_test.clj       ← 14 tests (e2e, revocation, policies, ephemeral)
+        ├── crypto_test.clj     ← 15 tests (crypto, key encode/decode, ephemeral chain)
         ├── datalog_test.clj    ← 19 tests (10 original + 9 scoping)
         └── graph_test.clj      ← 5 tests
 ```
 
-48 tests, 87 assertions. clj-kondo clean, cljfmt clean.
+53 tests, 97 assertions. clj-kondo clean, cljfmt clean.
 
 ## Dependencies
 
@@ -157,6 +157,11 @@ CEDN itself has zero transitive deps.
 8. **Revocation IDs**: SHA-256 of each block's signature bytes, returned as
    hex strings. Applications maintain revocation sets/bloom filters externally.
 
+9. **Ephemeral keys per block**: Each attenuation block gets a fresh Ed25519
+   keypair. Block i is verified with block i-1's `:next-key`. Token format:
+   `{:blocks [...] :proof eph-sk}`. Whoever holds the token can attenuate —
+   the attenuation guarantee is enforced by both Datalog scoping AND crypto.
+
 ## Authorizer API
 
 The `evaluate` function accepts an `:authorizer` keyword argument:
@@ -205,9 +210,9 @@ block invalidates all subsequent blocks).
 | Revocation IDs | Yes | ✓ | — |
 | Canonical serialization | Protobuf | ✓ CEDN | Different wire format |
 | Proof visualization | No | ✓ | Stroopwafel-only feature |
-| Ephemeral keys | Yes | No | **High** — security hardening |
+| Ephemeral keys | Yes | ✓ | — |
 | Datalog expressions | Yes | No | **High** — needed for time expiry |
-| Sealed tokens | Yes | No | Easy (depends on ephemeral keys) |
+| Sealed tokens | Yes | No | Easy (ephemeral keys done) |
 | Third-party blocks | Yes | No | Medium — advanced pattern |
 | Cross-platform | Multi-lang | JVM only | Phase 4 (bb ready) |
 
@@ -248,18 +253,21 @@ block invalidates all subsequent blocks).
 - ✓ Authorizer policies (ordered allow/deny, first match wins, closed-world)
 - ✓ 10 new tests (4 revocation ID + 6 policy)
 
-### Phase 3b: Biscuit Parity (remaining, priority order)
-1. **Ephemeral keys** per attenuation block — security hardening; without this
-   an attenuator who knows the signing key can forge blocks at any position.
-   Requires reworking `block.clj` to thread ephemeral public keys through the
-   signature chain.
-2. **Datalog expressions** — arithmetic, string ops, date comparisons, built-in
+### Phase 3b: Ephemeral Keys ✓ (v0.3.0)
+- ✓ Fresh Ed25519 keypair per attenuation block
+- ✓ Ephemeral key threading in verify-chain
+- ✓ Token format: `{:blocks [...] :proof eph-sk}`
+- ✓ Attenuate uses token proof — no explicit key needed
+- ✓ Public key encode/decode (X.509) in crypto.clj
+- ✓ 5 new tests (ephemeral uniqueness, forged block rejection, chain verify)
+
+### Phase 3c: Remaining Parity (priority order)
+1. **Datalog expressions** — arithmetic, string ops, date comparisons, built-in
    functions. Time-based token expiry (`$time < 2026-03-01`) is the #1
    real-world use case that depends on this.
-3. **Sealed tokens** — freeze token to prevent further attenuation. Depends on
-   ephemeral keys. May need HMAC-SHA256 or AES-GCM (only feature requiring
-   new crypto primitive).
-4. **Third-party blocks** — external parties sign blocks for delegated
+2. **Sealed tokens** — freeze token to prevent further attenuation. Ephemeral
+   keys are now implemented. May need HMAC-SHA256 or AES-GCM.
+3. **Third-party blocks** — external parties sign blocks for delegated
    attestation. Advanced pattern, lower priority.
 
 ### Phase 4: Multi-platform
