@@ -93,8 +93,12 @@
 
    Arguments:
      - `token` : vector of blocks (binary form)
-     - `opts`  : map with optional:
-         :explain? (boolean)
+     - keyword args:
+         `:explain?`   (boolean) — include proof tree in result
+         `:authorizer` (map)     — authorizer context with:
+           `:facts`  — additional authorizer facts
+           `:checks` — additional authorizer checks
+           `:rules`  — additional authorizer rules
 
    Returns:
 
@@ -104,18 +108,20 @@
     ```
    It does:
      1. Extracts logical content (:facts, :rules, :checks)
-     2. Delegates evaluation to the core engine
+     2. Delegates evaluation to the core engine with scope isolation
      3. Returns the authorization decision
 
    **IMPORTANT**:
      Assumes the token has already been
      cryptographically verified."
-  [token & {:keys [explain?]}]
+  [token & {:keys [explain? authorizer]}]
   (let [core-token
         {:blocks
          (mapv #(select-keys % [:facts :rules :checks])
                token)}]
-    (datalog/eval-token core-token :explain? explain?)))
+    (datalog/eval-token core-token
+                        :explain? explain?
+                        :authorizer authorizer)))
 
 (defn graph
   "Converts an explain tree into a graph representation.
