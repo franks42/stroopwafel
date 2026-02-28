@@ -96,9 +96,10 @@
      - keyword args:
          `:explain?`   (boolean) — include proof tree in result
          `:authorizer` (map)     — authorizer context with:
-           `:facts`  — additional authorizer facts
-           `:checks` — additional authorizer checks
-           `:rules`  — additional authorizer rules
+           `:facts`    — additional authorizer facts
+           `:checks`   — additional authorizer checks
+           `:rules`    — additional authorizer rules
+           `:policies` — ordered allow/deny policies (first match wins)
 
    Returns:
 
@@ -122,6 +123,28 @@
     (datalog/eval-token core-token
                         :explain? explain?
                         :authorizer authorizer)))
+
+(defn revocation-ids
+  "Extracts revocation IDs from a token.
+
+   Each block's revocation ID is the SHA-256 hash of its signature,
+   returned as a lowercase hex string. Applications can maintain
+   revocation sets or bloom filters to invalidate tokens.
+
+   Revoking any block's ID invalidates the entire token (since the
+   chain is append-only, revoking an earlier block invalidates all
+   subsequent blocks too).
+
+   Arguments:
+     - `token` : vector of blocks
+
+   Returns:
+     A vector of hex strings, one per block, in chain order."
+  [token]
+  (mapv (fn [block]
+          (let [sig-hash (crypto/sha256 (:sig block))]
+            (apply str (map #(format "%02x" %) sig-hash))))
+        token))
 
 (defn graph
   "Converts an explain tree into a graph representation.

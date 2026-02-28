@@ -51,6 +51,150 @@
                                             :query [[:admin "alice"]]}]})]
         (t/is (false? (:valid? result)))))))
 
+(t/deftest revocation-ids-unique-per-block
+  (t/testing "Each block produces a unique revocation ID"
+    (let [kp (sut/new-keypair)
+          token (sut/issue
+                 {:facts [[:user "alice"]]}
+                 {:private-key (:priv kp)})
+          token (sut/attenuate
+                 token
+                 {:checks [{:id :c1 :query [[:user "alice"]]}]}
+                 {:private-key (:priv kp)})
+          ids (sut/revocation-ids token)]
+      (t/is (= 2 (count ids)))
+      (t/is (not= (first ids) (second ids))))))
+
+(t/deftest revocation-ids-stable
+  (t/testing "Same token always produces the same revocation IDs"
+    (let [kp (sut/new-keypair)
+          token (sut/issue
+                 {:facts [[:user "alice"]]}
+                 {:private-key (:priv kp)})
+          ids1 (sut/revocation-ids token)
+          ids2 (sut/revocation-ids token)]
+      (t/is (= ids1 ids2)))))
+
+(t/deftest revocation-ids-grow-on-attenuate
+  (t/testing "Attenuating appends a new revocation ID, preserving existing ones"
+    (let [kp (sut/new-keypair)
+          token1 (sut/issue
+                  {:facts [[:user "alice"]]}
+                  {:private-key (:priv kp)})
+          ids1 (sut/revocation-ids token1)
+          token2 (sut/attenuate
+                  token1
+                  {:checks [{:id :c1 :query [[:user "alice"]]}]}
+                  {:private-key (:priv kp)})
+          ids2 (sut/revocation-ids token2)]
+      (t/is (= 1 (count ids1)))
+      (t/is (= 2 (count ids2)))
+      ;; First ID is preserved
+      (t/is (= (first ids1) (first ids2))))))
+
+(t/deftest revocation-ids-are-hex-strings
+  (t/testing "Revocation IDs are 64-char lowercase hex strings (SHA-256)"
+    (let [kp (sut/new-keypair)
+          token (sut/issue
+                 {:facts [[:user "alice"]]}
+                 {:private-key (:priv kp)})
+          ids (sut/revocation-ids token)]
+      (t/is (= 1 (count ids)))
+      (t/is (= 64 (count (first ids))))
+      (t/is (re-matches #"[0-9a-f]{64}" (first ids))))))
+
+(t/deftest authorizer-allow-policy
+  (t/testing "Allow policy passes when query matches"
+    (let [kp (sut/new-keypair)
+          token (sut/issue
+                 {:facts [[:right "alice" :read "/data"]]}
+                 {:private-key (:priv kp)})
+          result (sut/evaluate token
+                               :authorizer
+                               {:policies [{:kind :allow
+                                            :query [[:right "alice" :read "/data"]]}]})]
+      (t/is (true? (:valid? result))))))
+
+(t/deftest authorizer-deny-policy
+  (t/testing "Deny policy fails when query matches"
+    (let [kp (sut/new-keypair)
+          token (sut/issue
+                 {:facts [[:user "mallory"]]}
+                 {:private-key (:priv kp)})
+          result (sut/evaluate token
+                               :authorizer
+                               {:policies [{:kind :deny
+                                            :query [[:user "mallory"]]}
+                                           {:kind :allow
+                                            :query [[:user "mallory"]]}]})]
+      (t/is (false? (:valid? result))))))
+
+(t/deftest authorizer-no-matching-policy-fails
+  (t/testing "No matching policy results in deny (closed-world)"
+    (let [kp (sut/new-keypair)
+          token (sut/issue
+                 {:facts [[:user "alice"]]}
+                 {:private-key (:priv kp)})
+          result (sut/evaluate token
+                               :authorizer
+                               {:policies [{:kind :allow
+                                            :query [[:admin "alice"]]}]})]
+      (t/is (false? (:valid? result))))))
+
+(t/deftest authorizer-policy-order-matters
+  (t/testing "First matching policy wins — order determines outcome"
+    (let [kp (sut/new-keypair)
+          token (sut/issue
+                 {:facts [[:user "alice"] [:role "alice" :admin]]}
+                 {:private-key (:priv kp)})
+          ;; Allow first, deny second — allow wins
+          result1 (sut/evaluate token
+                                :authorizer
+                                {:policies [{:kind :allow
+                                             :query [[:role "alice" :admin]]}
+                                            {:kind :deny
+                                             :query [[:user "alice"]]}]})
+          ;; Deny first, allow second — deny wins
+          result2 (sut/evaluate token
+                                :authorizer
+                                {:policies [{:kind :deny
+                                             :query [[:user "alice"]]}
+                                            {:kind :allow
+                                             :query [[:role "alice" :admin]]}]})]
+      (t/is (true? (:valid? result1)))
+      (t/is (false? (:valid? result2))))))
+
+(t/deftest authorizer-policies-with-checks
+  (t/testing "Checks must pass before policies are evaluated"
+    (let [kp (sut/new-keypair)
+          token (sut/issue
+                 {:facts  [[:user "alice"]]
+                  :checks [{:id :c1 :query [[:admin "alice"]]}]}
+                 {:private-key (:priv kp)})
+          ;; Policy would allow, but check fails first
+          result (sut/evaluate token
+                               :authorizer
+                               {:policies [{:kind :allow
+                                            :query [[:user "alice"]]}]})]
+      (t/is (false? (:valid? result))))))
+
+(t/deftest authorizer-policies-see-only-authority
+  (t/testing "Policies only see authority + authorizer facts, not delegated block facts"
+    (let [kp (sut/new-keypair)
+          token (sut/issue
+                 {:facts [[:user "alice"]]}
+                 {:private-key (:priv kp)})
+          token (sut/attenuate
+                 token
+                 {:facts [[:role "alice" :admin]]}
+                 {:private-key (:priv kp)})
+          ;; Policy queries delegated fact — should not match
+          result (sut/evaluate token
+                               :authorizer
+                               {:policies [{:kind :allow
+                                            :query [[:role "alice" :admin]]}]})]
+      (t/is (false? (:valid? result))))))
+
 (t/deftest evaluate-backward-compatible
   (t/testing "Existing calls without :authorizer still work"
     (let [kp (sut/new-keypair)

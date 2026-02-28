@@ -10,7 +10,7 @@ from [KEX](https://github.com/serefayar/kex).
 Like a stroopwafel: two layers with something sealed between them — signed
 blocks wrapping authorized data.
 
-**Current version**: v0.2.0 (Phase 2 complete)
+**Current version**: v0.3.0 (Phase 3a complete)
 
 ## Goals
 
@@ -100,13 +100,13 @@ stroopwafel/
 │       └── graph.clj           ← explain tree → graph visualization
 └── test/
     └── stroopwafel/
-        ├── core_test.clj       ← 2 tests (end-to-end with authorizer)
+        ├── core_test.clj       ← 12 tests (e2e, revocation IDs, policies)
         ├── crypto_test.clj     ← 12 tests
         ├── datalog_test.clj    ← 19 tests (10 original + 9 scoping)
         └── graph_test.clj      ← 5 tests
 ```
 
-38 tests, 71 assertions. clj-kondo clean, cljfmt clean.
+48 tests, 87 assertions. clj-kondo clean, cljfmt clean.
 
 ## Dependencies
 
@@ -149,40 +149,64 @@ CEDN itself has zero transitive deps.
    query matches (inverse of normal checks). Enables negative constraints
    like "reject if user is banned".
 
+7. **Authorizer policies**: Ordered allow/deny policies evaluated after all
+   checks pass. First matching policy wins. No match = deny (closed-world).
+   Distinct from checks — policies determine the final authorization decision.
+
+8. **Revocation IDs**: SHA-256 of each block's signature bytes, returned as
+   hex strings. Applications maintain revocation sets/bloom filters externally.
+
 ## Authorizer API
 
 The `evaluate` function accepts an `:authorizer` keyword argument:
 
 ```clojure
 (stroopwafel.core/evaluate token
-  :authorizer {:facts  [[:time (System/currentTimeMillis)]
-                         [:resource "/api/data"]]
-               :checks [{:id    :check-read
-                         :query [[:can "alice" :read "/api/data"]]}]
-               :rules  '[{:id   :can-from-right
-                          :head [:can ?u ?a ?r]
-                          :body [[:right ?u ?a ?r]]}]})
+  :authorizer {:facts    [[:time (System/currentTimeMillis)]
+                           [:resource "/api/data"]]
+               :checks   [{:id    :check-read
+                            :query [[:can "alice" :read "/api/data"]]}]
+               :rules    '[{:id   :can-from-right
+                            :head [:can ?u ?a ?r]
+                            :body [[:right ?u ?a ?r]]}]
+               :policies [{:kind :allow
+                            :query [[:can "alice" :read "/api/data"]]}
+                           {:kind :deny
+                            :query [[:user "mallory"]]}]})
 ```
 
-Authorizer facts/rules/checks are evaluated with scope `#{0 :authorizer}` —
-they see authority block facts but not delegated block facts.
+Authorizer facts/rules/checks/policies are evaluated with scope
+`#{0 :authorizer}` — they see authority block facts but not delegated block
+facts.
+
+## Revocation API
+
+```clojure
+(stroopwafel.core/revocation-ids token)
+;; => ["a1b2c3..." "d4e5f6..."]  ; one hex string per block
+```
+
+Each ID is the SHA-256 hash of the block's Ed25519 signature. Revoking any
+block's ID invalidates the token (append-only chain means revoking an earlier
+block invalidates all subsequent blocks).
 
 ## Biscuit Parity Status
 
-| Feature | Biscuit | Stroopwafel v0.2.0 | Gap |
+| Feature | Biscuit | Stroopwafel v0.3.0 | Gap |
 |---------|---------|-------------------|-----|
 | Ed25519 signatures | Yes | ✓ | — |
 | Block chain | Yes | ✓ | — |
 | Block isolation | Yes | ✓ | — |
 | Deny rules | Yes | ✓ | — |
 | Authorizer context | Yes | ✓ | — |
+| Authorizer policies | Yes | ✓ | — |
 | Scoped + fixpoint rules | Yes | ✓ | — |
+| Revocation IDs | Yes | ✓ | — |
 | Canonical serialization | Protobuf | ✓ CEDN | Different wire format |
 | Proof visualization | No | ✓ | Stroopwafel-only feature |
 | Ephemeral keys | Yes | No | **High** — security hardening |
 | Datalog expressions | Yes | No | **High** — needed for time expiry |
-| Revocation IDs | Yes | No | Easy — trivial derivation |
-| Sealed tokens | Yes | No | Easy |
+| Sealed tokens | Yes | No | Easy (depends on ephemeral keys) |
 | Third-party blocks | Yes | No | Medium — advanced pattern |
 | Cross-platform | Multi-lang | JVM only | Phase 4 (bb ready) |
 
@@ -218,7 +242,12 @@ they see authority block facts but not delegated block facts.
 - ✓ Graph dispatch updated for set-based origins
 - ✓ 9 new scoping tests + 2 end-to-end tests (38 total, 71 assertions)
 
-### Phase 3: Biscuit Parity (priority order)
+### Phase 3a: Easy Wins ✓ (v0.3.0)
+- ✓ Revocation IDs (SHA-256 of block signatures, hex strings)
+- ✓ Authorizer policies (ordered allow/deny, first match wins, closed-world)
+- ✓ 10 new tests (4 revocation ID + 6 policy)
+
+### Phase 3b: Biscuit Parity (remaining, priority order)
 1. **Ephemeral keys** per attenuation block — security hardening; without this
    an attenuator who knows the signing key can forge blocks at any position.
    Requires reworking `block.clj` to thread ephemeral public keys through the
@@ -226,10 +255,10 @@ they see authority block facts but not delegated block facts.
 2. **Datalog expressions** — arithmetic, string ops, date comparisons, built-in
    functions. Time-based token expiry (`$time < 2026-03-01`) is the #1
    real-world use case that depends on this.
-3. **Revocation IDs** — derive from existing `:sig` bytes (trivial). Application
-   checks revocation set/bloom filter.
-4. **Sealed tokens** — freeze token to prevent further attenuation.
-5. **Third-party blocks** — external parties sign blocks for delegated
+3. **Sealed tokens** — freeze token to prevent further attenuation. Depends on
+   ephemeral keys. May need HMAC-SHA256 or AES-GCM (only feature requiring
+   new crypto primitive).
+4. **Third-party blocks** — external parties sign blocks for delegated
    attestation. Advanced pattern, lower priority.
 
 ### Phase 4: Multi-platform

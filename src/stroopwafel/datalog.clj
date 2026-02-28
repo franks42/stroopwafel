@@ -334,6 +334,46 @@
                   :result   :fail
                   :missing  query}}))))
 
+(defn eval-policy
+  "Evaluates a single authorizer policy against a fact store with scope.
+
+   A policy has:
+     - `:kind` — `:allow` or `:deny`
+     - `:query` — fact patterns to match
+
+   Returns:
+     - `{:matched? true :kind :allow/:deny}` if the query matches
+     - `{:matched? false}` if the query does not match"
+  [{:keys [kind query]} fact-store scope]
+  (let [visible (reduce (fn [m [origin fact]] (assoc m fact origin))
+                        {}
+                        (facts-for-scope fact-store scope))
+        origin-facts (for [[fact origin] visible]
+                       [origin fact])
+        results (eval-body query origin-facts)]
+    (if (seq results)
+      {:matched? true :kind kind}
+      {:matched? false})))
+
+(defn eval-policies
+  "Evaluates authorizer policies in order. First matching policy wins.
+
+   - `:allow` match → `{:result :allow}`
+   - `:deny` match → `{:result :deny}`
+   - No match → `{:result :deny}` (closed-world default)
+
+   Policies are only evaluated after all block checks pass."
+  [policies fact-store scope]
+  (if (empty? policies)
+    {:result :allow}
+    (let [first-match (some (fn [policy]
+                              (let [r (eval-policy policy fact-store scope)]
+                                (when (:matched? r) r)))
+                            policies)]
+      (if first-match
+        {:result (:kind first-match)}
+        {:result :deny}))))
+
 (defn eval-checks
   "Evaluates all checks on the fact store with optional scope filtering."
   ([checks store]
@@ -404,11 +444,21 @@
           (eval-checks (:checks authorizer) store (trusted-origins nil)))
 
         all-results (concat block-results authorizer-results)
-        failed (first (filter #(= :fail (:result %)) all-results))]
+        failed (first (filter #(= :fail (:result %)) all-results))
+
+        ;; 7. Evaluate authorizer policies (after all checks pass)
+        policy-result
+        (when (and (nil? failed) (:policies authorizer))
+          (eval-policies (:policies authorizer) store (trusted-origins nil)))]
     (cond
       failed
       (if explain?
         {:valid? false :explain (:explain failed)}
+        {:valid? false})
+
+      (and policy-result (= :deny (:result policy-result)))
+      (if explain?
+        {:valid? false :explain {:type :policy :result :deny}}
         {:valid? false})
 
       :else

@@ -1,7 +1,7 @@
-# Biscuit Gap Analysis — Stroopwafel v0.2.0
+# Biscuit Gap Analysis — Stroopwafel v0.3.0
 
 Current status of Stroopwafel against the Biscuit specification (v3.3).
-Updated Feb 2026 after Phase 2 completion.
+Updated Feb 2026 after Phase 3a completion.
 
 See `biscuit-kex-analysis.md` for the original KEX research and Biscuit
 background. This document tracks only the gap status.
@@ -23,10 +23,10 @@ background. This document tracks only the gap status.
 | Proof visualization | No | ✓ Yes | Stroopwafel-only feature |
 | Ephemeral keys per block | Yes | **No** | Open — **high priority** |
 | Datalog expressions | Yes | **No** | Open — **high priority** |
-| Revocation IDs | Yes | **No** | Open — easy |
-| Sealed tokens | Yes | **No** | Open — easy |
+| Revocation IDs | Yes | ✓ Yes | Done (v0.3.0) |
+| Authorizer policies | Yes | ✓ Yes | Done (v0.3.0) |
+| Sealed tokens | Yes | **No** | Open — easy (depends on ephemeral keys) |
 | Third-party blocks | Yes | **No** | Open — medium |
-| Authorizer policies | Yes | Partial | Authorizer checks exist, not full allow/deny policies |
 | Cross-platform | Multi-lang | JVM only | Open — bb ready, CLJS needs work |
 
 ---
@@ -75,9 +75,25 @@ tokens are **not interoperable** with other Biscuit implementations. This is a
 deliberate choice — CEDN is EDN-native, human-readable, and cross-platform
 within the Clojure ecosystem.
 
+### Revocation IDs — ✓ Done (v0.3.0)
+
+SHA-256 of each block's `:sig` bytes, returned as 64-char lowercase hex strings.
+`revocation-ids` function in `core.clj`. Revocation checking is application-level
+(set or bloom filter lookup). Revoking any block's ID invalidates the entire
+token (append-only chain).
+
+### Authorizer Policies — ✓ Done (v0.3.0)
+
+Ordered allow/deny policies evaluated after all block checks pass. First matching
+policy wins. No match = deny (closed-world default). Distinct from per-block
+checks — policies determine the final authorization decision.
+
+Policies only see authority + authorizer facts (scope `#{0 :authorizer}`),
+not delegated block facts.
+
 ---
 
-## Open Gaps (Phase 3, priority order)
+## Open Gaps (Phase 3b, priority order)
 
 ### 1. Ephemeral Keys Per Block — High Priority
 
@@ -126,21 +142,7 @@ case), amount limits, or string prefix matching.
 
 **Files affected**: `datalog.clj` (major), `datalog_test.clj` (major)
 
-### 3. Revocation IDs — Easy
-
-**What Biscuit does**: Each block has a revocation ID derived from its
-signature hash. Applications maintain revocation lists to invalidate tokens.
-
-**Current state**: No revocation IDs. Tokens cannot be invalidated after
-issuance.
-
-**Implementation**: Derive IDs from existing `:sig` bytes (`SHA-256` of
-signature). Add `revocation-ids` function to `core.clj` that extracts IDs from
-a token. Revocation checking is application-level (set or bloom filter lookup).
-
-**Files affected**: `core.clj` (minor), `core_test.clj` (minor)
-
-### 4. Sealed Tokens — Easy
+### 3. Sealed Tokens — Easy (depends on ephemeral keys)
 
 **What Biscuit does**: A token can be "sealed" to prevent further attenuation.
 The seal encrypts the last ephemeral private key, making it impossible to
@@ -156,7 +158,7 @@ each block has its own key.
 
 **Files affected**: `core.clj` (minor), `block.clj` (minor)
 
-### 5. Third-Party Blocks — Medium
+### 4. Third-Party Blocks — Medium
 
 **What Biscuit does**: External parties can sign blocks included in the chain
 without seeing the full token. Enables delegated attestation ("IdP X attests
@@ -176,6 +178,27 @@ single-issuer use cases.
 
 **Files affected**: `block.clj` (medium), `core.clj` (medium),
 `crypto.clj` (minor)
+
+---
+
+## Crypto Primitives Required
+
+Current `crypto.clj` provides: Ed25519 sign/verify, SHA-256, CEDN encoding.
+**No encryption primitives exist today.** Analysis of what each open feature needs:
+
+| Feature | New Crypto? | What's Needed |
+|---------|-------------|---------------|
+| Revocation IDs | No | `sha256` already exists — derive from `:sig` bytes |
+| Authorizer policies | No | No crypto involved — pure Datalog evaluation |
+| Ephemeral keys | No | `generate-keypair` already exists — change is structural (key threading) |
+| Sealed tokens | **Maybe** | Option A: HMAC-SHA256 (simple, irreversible seal) — discard ephemeral key, store HMAC proof. Option B: AES-GCM (reversible seal) — encrypt ephemeral key so original sealer can unseal. Option A is sufficient for most use cases. |
+| Third-party blocks | No | `sign`/`verify` already exist — needs per-block public key validation |
+| Datalog expressions | No | No crypto involved — pure evaluation |
+
+**Bottom line**: Sealed tokens are the only feature that may require a new crypto
+primitive (HMAC-SHA256 or AES-GCM). Everything else is covered by existing
+sign/verify/hash operations. The sealed tokens decision can be deferred until
+ephemeral keys are implemented (sealing depends on ephemeral keys).
 
 ---
 
