@@ -1,4 +1,4 @@
-(ns kex.datalog
+(ns stroopwafel.datalog
   (:require
    [clojure.string :as str]))
 

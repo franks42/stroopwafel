@@ -1,5 +1,5 @@
-(ns kex.graph-test
-  (:require [kex.graph :as sut]
+(ns stroopwafel.graph-test
+  (:require [stroopwafel.graph :as sut]
             [clojure.test :as t]))
 
 (t/deftest explain->graph-pass-simple

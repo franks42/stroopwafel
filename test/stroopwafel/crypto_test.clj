@@ -1,6 +1,6 @@
-(ns kex.crypto-test
-  (:require [kex.crypto :as sut]
-            [kex.block :as block]
+(ns stroopwafel.crypto-test
+  (:require [stroopwafel.crypto :as sut]
+            [stroopwafel.block :as block]
             [clojure.test :as t]))
 
 (t/deftest canonical-map-order-test

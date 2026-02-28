@@ -1,4 +1,4 @@
-(ns kex.graph)
+(ns stroopwafel.graph)
 
 (defn next-node-id
   "Returns a tuple of:

@@ -1,5 +1,5 @@
-(ns kex.block
-  (:require [kex.crypto :as c]))
+(ns stroopwafel.block
+  (:require [stroopwafel.crypto :as c]))
 
 (defn authority-block
   "Creates and signs the initial (authority) block of a token chain.

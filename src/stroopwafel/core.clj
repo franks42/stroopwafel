@@ -1,8 +1,8 @@
-(ns kex.core
-  (:require [kex.block :as block]
-            [kex.datalog :as datalog]
-            [kex.graph :as graph]
-            [kex.crypto :as crypto]))
+(ns stroopwafel.core
+  (:require [stroopwafel.block :as block]
+            [stroopwafel.datalog :as datalog]
+            [stroopwafel.graph :as graph]
+            [stroopwafel.crypto :as crypto]))
 
 (defn new-keypair
   "Helper to generate a new asymmetric keypair for signing and verification
@@ -121,7 +121,7 @@
   "Converts an explain tree into a graph representation.
 
    Arguments:
-     - `explain-tree` (returned from kex.core/evaluate)
+     - `explain-tree` (returned from stroopwafel.core/evaluate)
 
    Returns:
     ```clojure

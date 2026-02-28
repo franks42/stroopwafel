@@ -1,5 +1,5 @@
-(ns kex.datalog-test
-  (:require [kex.datalog :as sut]
+(ns stroopwafel.datalog-test
+  (:require [stroopwafel.datalog :as sut]
             [clojure.test :as t]))
 
 (t/deftest variable?-test

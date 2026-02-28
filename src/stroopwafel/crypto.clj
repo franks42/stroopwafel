@@ -1,4 +1,4 @@
-(ns kex.crypto
+(ns stroopwafel.crypto
   (:require [cedn.core :as cedn])
   (:import
    [java.security MessageDigest Signature KeyPairGenerator]
