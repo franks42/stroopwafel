@@ -104,72 +104,120 @@ interoperability with real Biscuit tokens.
 - REPL-friendly
 - Pure Clojure, no external deps
 
-## 4. KEX Critical Gaps
+## 4. KEX Gaps — Stroopwafel Status
 
-### 4.1 Block Isolation (SECURITY CRITICAL)
+### 4.1 Block Isolation (SECURITY CRITICAL) — ✓ Fixed (v0.2.0)
 
-**The biggest gap.** All facts are pooled into a single namespace tagged
-`{:origin :authority}`. Delegated blocks can inject facts that **expand**
+**Was the biggest gap.** All facts were pooled into a single namespace tagged
+`{:origin :authority}`. Delegated blocks could inject facts that **expand**
 authority, inverting Biscuit's core attenuation guarantee.
 
-**Proper fix requires**:
-- Tag each fact with its block index
-- Rules in block N only see facts from block 0 + block N
-- Authorizer policies only see block 0 + authorizer facts
+**Fix implemented in v0.2.0**:
+- Facts tagged with set-based origins: `#{0}` (authority), `#{n}` (block n),
+  `#{:authorizer}` (authorizer context)
+- Rules in block N only see facts from `#{0 N :authorizer}`
+- Authorizer checks only see `#{0 :authorizer}`
+- Derived facts carry union of input origins + rule block index
+- Scope filtering via `(subset? fact-origin trusted-origins)`
+- 9 dedicated scoping tests validate the guarantee
 
-### 4.2 No Deny Rules / Negative Constraints
+### 4.2 Deny Rules / Negative Constraints — ✓ Fixed (v0.2.0)
 
-KEX only has positive checks. Biscuit supports deny policies that can reject
-authorization even when all positive checks pass. Essential for:
+**Implemented.** Checks with `:kind :reject` fail when the query matches
+(inverse of normal `check-if` semantics). Enables:
 - Revoking specific capabilities
-- Time-based expiration
-- IP/context restrictions
+- Banning users/resources
+- Context-based restrictions
 
-### 4.3 No Third-Party Blocks
+Note: Biscuit also has **authorizer policies** (`allow if` / `deny if`) which
+are distinct from per-block checks. Stroopwafel's authorizer checks serve a
+similar role but are structurally checks, not policies. The semantic difference
+is minor — both prevent authorization when matched/unmatched.
+
+### 4.3 No Third-Party Blocks — Open
 
 Biscuit allows external parties to sign blocks that are included in the chain.
 This enables delegated attestation patterns (e.g., "identity provider X attests
 that this user has role Y").
 
-### 4.4 No Sealed Tokens
+**Difficulty**: Medium. Requires per-block public key validation (not just the
+authority key), and a request/response protocol for the third party to sign a
+block without seeing the full token.
+
+**Priority**: Low-medium. Advanced delegation pattern, not needed for most
+single-issuer use cases.
+
+### 4.4 No Sealed Tokens — Open
 
 No way to freeze a token to prevent further attenuation.
 
-### 4.5 No Revocation Support
+**Difficulty**: Easy. Options include encrypting the last block's ephemeral
+private key, adding a seal marker, or simply omitting the key material needed
+for further attenuation.
+
+**Priority**: Medium. Useful for "final form" tokens sent to end-users.
+
+### 4.5 No Revocation Support — Open
 
 No revocation IDs derived from block signatures, no way to maintain revocation
 lists.
 
-### 4.6 No Ephemeral Keys Per Block
+**Difficulty**: Easy. Derive IDs from existing `:sig` bytes (SHA-256 of
+signature). Revocation checking is application-level (set/bloom filter lookup).
 
-Biscuit generates a fresh key pair for each appended block. KEX does not
-implement this part of the crypto scheme.
+**Priority**: Medium. Important for production use but trivial to implement.
 
-### 4.7 Ad-Hoc Serialization
+### 4.6 No Ephemeral Keys Per Block — Open
 
-Uses `pr-str` with `sorted-map` for canonical serialization — fragile because:
-- `pr-str` is a developer convenience, not a serialization primitive
-- Dynamic vars (`*print-length*`, `*print-level*`) can silently alter output
-- No formal spec, no cross-platform guarantee
-- No `clojure.edn/generate-string` equivalent exists
+Biscuit generates a fresh key pair for each appended block. The signature chain
+links blocks via: each block's signature covers content + next block's public
+key. This means only the holder of the current ephemeral key can attenuate.
 
-**Solution**: Replace with CEDN `canonical-bytes` — deterministic, spec-backed,
-cross-platform.
+Currently stroopwafel reuses the same key for all blocks, which means any
+attenuator who knows the key can forge blocks at any position in the chain.
 
-### 4.8 Limited Datalog
+**Difficulty**: Medium. Requires reworking `block.clj`'s signing/verification
+to thread ephemeral public keys through the chain.
 
-- No expressions (arithmetic, string operations, date comparisons)
-- No recursive rule evaluation
-- No built-in functions
-- No scoped rule evaluation
+**Priority**: High for production security. Without ephemeral keys, the crypto
+scheme is weaker than Biscuit's — an attenuator could forge earlier blocks.
 
-### 4.9 JVM-Only
+### 4.7 Ad-Hoc Serialization — ✓ Fixed (v0.1.0)
+
+**Fixed.** Replaced `pr-str` + `sorted-map` with CEDN `canonical-bytes` —
+deterministic, spec-backed, cross-platform. Single function call in
+`encode-block`.
+
+### 4.8 Limited Datalog — Partially Fixed (v0.2.0)
+
+**Fixed in v0.2.0**:
+- ✓ Scoped rule evaluation (per-block with scope filtering)
+- ✓ Recursive/fixpoint rule evaluation (max 100 iterations, 1000 facts)
+
+**Still missing**:
+- Expressions in rule/check bodies (arithmetic, string ops, date comparisons)
+- Built-in functions (`$time < 2026-03-01`, `$amount <= 100`, string matching)
+
+**Difficulty**: Hard. Requires extending the Datalog body pattern language to
+support expression nodes alongside fact patterns. Time-based expiry is the #1
+real-world use case that depends on this.
+
+**Priority**: High for real-world use. Without expressions, you can't do
+time-based token expiry, amount limits, or string prefix matching.
+
+### 4.9 JVM-Only — Open
 
 No .cljc, no ClojureScript/Babashka portability.
 
+**Difficulty**: Medium. CEDN is already cross-platform (.cljc). Babashka has
+full JDK crypto (confirmed working). CLJS would need Web Crypto API adapter.
+
+**Priority**: Medium. Babashka support is nearly free (just .cljc rename +
+test). CLJS requires more work.
+
 ## 5. CEDN Integration
 
-CEDN (Canonical EDN, `com.github.franks42/cedn` v1.1.0) provides the
+CEDN (Canonical EDN, `com.github.franks42/cedn` v1.2.0) provides the
 deterministic serialization layer that KEX lacks.
 
 ### Why CEDN
@@ -226,16 +274,24 @@ but all algorithms work via `getInstance()`.
 
 ## 7. Recommendations
 
-### For Stroopwafel
+### Phase Status
 
-1. **Phase 1**: Copy KEX source into `stroopwafel.*` namespaces, replace
-   `kex.crypto/canonical` with `cedn/canonical-bytes`, get existing KEX tests
-   passing
-2. **Phase 2**: Fix block isolation (the critical security gap), enforce
-   attenuation-only semantics, add deny rules
-3. **Phase 3**: Third-party blocks, sealed tokens, revocation IDs, full Datalog
-   expressions
+1. **Phase 1** ✓ (v0.1.0): KEX source in `stroopwafel.*` namespaces, CEDN
+   `canonical-bytes` for signing, 27 tests passing
+2. **Phase 2** ✓ (v0.2.0): Block isolation, scope filtering, deny rules,
+   authorizer API, fixpoint rule evaluation, 38 tests passing
+3. **Phase 3** (next): Ephemeral keys, Datalog expressions, revocation IDs,
+   sealed tokens, third-party blocks
 4. **Phase 4**: .cljc throughout (JVM + Babashka + potentially CLJS)
+
+### Phase 3 Priority Order
+
+1. **Ephemeral keys** — security hardening, without this the crypto scheme is
+   weaker than Biscuit's (attenuators can forge earlier blocks)
+2. **Datalog expressions** — time-based expiry is the #1 real-world use case
+3. **Revocation IDs** — trivial to derive, important for production
+4. **Sealed tokens** — easy, useful for final-form tokens
+5. **Third-party blocks** — advanced, lower priority
 
 ### Do Not Use biscuit-java
 
@@ -254,18 +310,22 @@ separate decision.
 
 ## 8. Summary Table
 
-| Feature | Biscuit | KEX | Stroopwafel (target) |
-|---------|---------|-----|---------------------|
-| Ed25519 signatures | Yes | Yes | Yes |
-| Block chain | Yes | Yes | Yes |
-| Datalog engine | Full | Minimal | Full |
-| Block isolation | Yes | **No** | Yes |
-| Deny rules | Yes | **No** | Yes |
-| Third-party blocks | Yes | **No** | Yes |
-| Sealed tokens | Yes | **No** | Yes |
-| Revocation IDs | Yes | **No** | Yes |
-| Ephemeral keys | Yes | **No** | Yes |
-| Canonical serialization | Protobuf | pr-str | **CEDN** |
-| Cross-platform | Multi-lang | JVM only | JVM + bb + CLJS |
+| Feature | Biscuit | KEX | Stroopwafel v0.2.0 |
+|---------|---------|-----|--------------------|
+| Ed25519 signatures | Yes | Yes | ✓ Yes |
+| Block chain | Yes | Yes | ✓ Yes |
+| Datalog engine | Full | Minimal | Scoped + fixpoint (no expressions) |
+| Block isolation | Yes | **No** | ✓ **Yes** (v0.2.0) |
+| Deny rules | Yes | **No** | ✓ **Yes** (v0.2.0) |
+| Authorizer context | Yes | **No** | ✓ **Yes** (v0.2.0) |
+| Scoped rules | Yes | **No** | ✓ **Yes** (v0.2.0) |
+| Fixpoint evaluation | Yes | **No** | ✓ **Yes** (v0.2.0) |
+| Datalog expressions | Yes | **No** | **No** |
+| Third-party blocks | Yes | **No** | **No** |
+| Sealed tokens | Yes | **No** | **No** |
+| Revocation IDs | Yes | **No** | **No** |
+| Ephemeral keys | Yes | **No** | **No** |
+| Canonical serialization | Protobuf | pr-str | ✓ **CEDN** (v0.1.0) |
+| Cross-platform | Multi-lang | JVM only | JVM only (bb ready) |
 | Dependencies | Varies | Zero | CEDN only |
-| Proof visualization | No | Yes | Yes |
+| Proof visualization | No | Yes | ✓ Yes |

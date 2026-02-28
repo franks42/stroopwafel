@@ -166,6 +166,25 @@ The `evaluate` function accepts an `:authorizer` keyword argument:
 Authorizer facts/rules/checks are evaluated with scope `#{0 :authorizer}` —
 they see authority block facts but not delegated block facts.
 
+## Biscuit Parity Status
+
+| Feature | Biscuit | Stroopwafel v0.2.0 | Gap |
+|---------|---------|-------------------|-----|
+| Ed25519 signatures | Yes | ✓ | — |
+| Block chain | Yes | ✓ | — |
+| Block isolation | Yes | ✓ | — |
+| Deny rules | Yes | ✓ | — |
+| Authorizer context | Yes | ✓ | — |
+| Scoped + fixpoint rules | Yes | ✓ | — |
+| Canonical serialization | Protobuf | ✓ CEDN | Different wire format |
+| Proof visualization | No | ✓ | Stroopwafel-only feature |
+| Ephemeral keys | Yes | No | **High** — security hardening |
+| Datalog expressions | Yes | No | **High** — needed for time expiry |
+| Revocation IDs | Yes | No | Easy — trivial derivation |
+| Sealed tokens | Yes | No | Easy |
+| Third-party blocks | Yes | No | Medium — advanced pattern |
+| Cross-platform | Multi-lang | JVM only | Phase 4 (bb ready) |
+
 ## Reference Repos (local)
 
 | Repo | Path | What to look at |
@@ -198,16 +217,24 @@ they see authority block facts but not delegated block facts.
 - ✓ Graph dispatch updated for set-based origins
 - ✓ 9 new scoping tests + 2 end-to-end tests (38 total, 71 assertions)
 
-### Phase 3: Biscuit Parity
-- Token sealing
-- Revocation IDs
-- Third-party blocks
-- Ephemeral keys per attenuation block
-- Full Datalog: scopes, expressions, built-in functions
+### Phase 3: Biscuit Parity (priority order)
+1. **Ephemeral keys** per attenuation block — security hardening; without this
+   an attenuator who knows the signing key can forge blocks at any position.
+   Requires reworking `block.clj` to thread ephemeral public keys through the
+   signature chain.
+2. **Datalog expressions** — arithmetic, string ops, date comparisons, built-in
+   functions. Time-based token expiry (`$time < 2026-03-01`) is the #1
+   real-world use case that depends on this.
+3. **Revocation IDs** — derive from existing `:sig` bytes (trivial). Application
+   checks revocation set/bloom filter.
+4. **Sealed tokens** — freeze token to prevent further attenuation.
+5. **Third-party blocks** — external parties sign blocks for delegated
+   attestation. Advanced pattern, lower priority.
 
 ### Phase 4: Multi-platform
 - .cljc throughout (JVM + Babashka + potentially CLJS)
-- Cross-platform crypto (JCA on JVM, TBD on JS)
+- Cross-platform crypto (JCA on JVM, Web Crypto API on JS)
+- Babashka already confirmed working (full JDK crypto in bb v1.12.215)
 
 ## License
 
