@@ -1,6 +1,6 @@
 (ns kex.crypto
+  (:require [cedn.core :as cedn])
   (:import
-   [java.nio.charset StandardCharsets]
    [java.security MessageDigest Signature KeyPairGenerator]
    [java.util Arrays]))
 
@@ -98,14 +98,28 @@
     (.update sig data)
     (.verify sig signature)))
 
-(defn encode-block
-  "Encodes a block payload into a canonical byte representation.
+(defn- bytes->hex
+  "Converts a byte array to a lowercase hex string."
+  [^bytes bs]
+  (let [sb (StringBuilder.)]
+    (doseq [b bs]
+      (.append sb (format "%02x" (bit-and (int b) 0xff))))
+    (.toString sb)))
 
-   The encoding must be:
-     - deterministic
-     - stable across JVM runs
+(defn- prepare-for-serialization
+  "Converts byte arrays in a block payload to hex strings so that
+   all values are serializable by CEDN."
+  [block]
+  (cond-> block
+    (bytes? (:prev block)) (update :prev bytes->hex)))
+
+(defn encode-block
+  "Encodes a block payload into a canonical byte representation
+   using CEDN (Canonical EDN).
+
+   The encoding is:
+     - deterministic (same value -> same bytes, always)
+     - stable across JVM runs and platforms
      - independent of map ordering"
   [block]
-  (.getBytes
-   (pr-str (canonical block))
-   StandardCharsets/UTF_8))
+  (cedn/canonical-bytes (prepare-for-serialization block)))
