@@ -509,6 +509,359 @@ user's own key.
 
 ---
 
+## Known Gaps and Mitigations
+
+### Gap 1: No Oracle — The Intent Can Be Fiction (Critical)
+
+The structured intent comes from the agent AI. The panel evaluates it.
+The signing service signs it. But **nobody independently verifies the
+facts in the intent.**
+
+- Is the price actually $29.99 on amazon.com right now?
+- Does ASIN:B08X7JK34L actually map to "Clean Code"?
+- Is the item actually categorized as "books"?
+
+If the agent hallucinated the ASIN, misreported the price, or
+miscategorized the item, the panel reviews a fiction, and the signing
+service mints a capability for that fiction. The execution service
+verifies the *token*, not the *intent's factual accuracy*.
+
+**Mitigation:** The execution service (or a verification service in the
+deterministic realm) must independently resolve item identity, current
+price, and category from the vendor's actual API *before* executing.
+The capability token authorizes "buy item X at up to $Y" — the
+execution service confirms X is real and costs ≤ Y. This makes the
+execution service more complex (it needs vendor API integrations, not
+just token verification), but the verification must happen in
+deterministic code, not in the AI realm.
+
+### Gap 2: Category Classification Is Unreliable (High)
+
+The policy hinges on category whitelists/blacklists. But who assigns
+categories?
+
+- Vendor self-classification (often wrong or gaming)
+- Agent AI classifies (may hallucinate or adversarially misclassify)
+- MCC codes (crude — "5411 Grocery Stores" doesn't distinguish alcohol
+  from vegetables)
+
+An adversarial agent could frame a gambling site purchase as
+"entertainment" or a subscription as a "one-time purchase."
+
+**Mitigation:** The execution service should maintain its own category
+mapping (or use a deterministic classification service), not trust the
+agent's or the intent's category field. Category verification happens
+in the deterministic realm alongside price verification (Gap 1).
+
+### Gap 3: The Auto-Approve Path Undermines the Architecture (High)
+
+Purchases under $10 skip the panel and go directly to the signing
+service. This is exactly the "single AI decides" model the entire
+architecture is designed to prevent. A manipulated agent can make many
+$9.99 purchases — 20/day × $9.99 = $199.80 of unreviewed spend, none
+of it semantically reviewed.
+
+**Mitigation options:**
+
+- **Eliminate auto-approve.** Accept the latency cost for all
+  transactions. Simplest, most secure, worst UX.
+- **Retroactive review.** Auto-approve executes immediately, but the
+  panel reviews retroactively and can flag patterns, suspend the
+  agent, or alert the user. Allows fast execution while preserving
+  semantic oversight.
+- **Lightweight single-judge review.** Instead of full panel, one
+  judge does a quick check for auto-approve-range purchases. Faster
+  than full panel, better than no review.
+
+### Gap 4: No Feedback Loop (High)
+
+The architecture is stateless per-transaction. There's no mechanism for
+learning from outcomes:
+
+- "Last time the agent bought X, the user returned it" → adjust future
+  evaluations
+- "The agent consistently overpays" → flag pattern
+- "The panel approved something the user complained about" → update
+  evaluation criteria
+- "The agent's intent accuracy degrades over long sessions" → detect
+  context decay
+
+Without feedback, the same mistakes repeat indefinitely.
+
+**Mitigation:** Add a post-transaction feedback loop. The user rates
+transactions (or returns/disputes are automatically captured). This
+history becomes an additional input to the panel and to the signing
+service's policy checks. Transaction outcome data is stored in the
+deterministic realm — the panel receives it as context, but cannot
+modify it.
+
+### Gap 5: The Signing Service Is a Single Point of Everything (High)
+
+The signing service holds the root key, makes the final sign/reject
+decision, tracks daily spend state, and must be highly available. It's
+a centralized CA for AI capabilities:
+
+- If compromised → attacker can mint arbitrary capability tokens
+- If down → no transactions happen
+- Daily budget tracking across multiple agents requires serialized
+  state updates (distributed systems problem)
+
+The doc describes it as "simple, auditable, deterministic" — but
+stateful budget tracking, rate limiting across multiple agents, and
+key management are not simple.
+
+**Mitigation:** The signing service needs its own threat model and
+security architecture. Key management options: HSM-backed signing,
+threshold signatures (no single machine holds the full key),
+geographic distribution. Budget coordination: pessimistic locking or
+serialized queue (accept the bottleneck — it's a feature, not a bug,
+that transaction issuance is serialized). Availability: the signing
+service is stateful, so active/passive failover with replicated state.
+
+### Gap 6: Human Approval Fatigue (Medium)
+
+The escalation model assumes the user engages thoughtfully. In practice:
+
+- 5 notifications/day → users start auto-approving
+- Notification at 3am → reflexively approved
+- An adversarial agent could time high-value requests for likely
+  auto-approve windows (late night, during meetings)
+- Approval is binary (approve/deny) — the user can't modify the intent
+  ("approve but change quantity from 3 to 1")
+
+**Mitigation:** Batch approvals ("here are today's 3 pending requests,
+review at your convenience"), progressive trust (agents that
+consistently make good purchases earn higher auto-approve thresholds
+over time — feedback loop from Gap 4), and rich approval UX (allow
+modifications, not just approve/deny).
+
+### Gap 7: Latency Kills Real-Time Use Cases (Medium)
+
+The full path takes 5–15 seconds minimum. For stock trading (milliseconds
+matter), flash sales (item may be gone), or conversational shopping ("buy
+that" should feel instant), this is unusable.
+
+**Mitigation: Pre-authorized standing orders.** Mint capability tokens in
+advance with all constraints baked in:
+
+```clojure
+;; Pre-authorized: buy AAPL if it drops below $150, up to 10 shares, this week
+(stroopwafel.core/issue
+ {:facts  [[:standing-order :buy "AAPL" 10 150.00]
+           [:requester "trading-agent"]]
+  :checks '[{:id    :expiry
+             :query [[:time ?t]]
+             :when  [(< ?t 1709856000000)]}   ;; valid this week
+            {:id    :price-limit
+             :query [[:execution-price ?p]]
+             :when  [(<= ?p 150.00)]}
+            {:id    :quantity-limit
+             :query [[:execution-qty ?q]]
+             :when  [(<= ?q 10)]}]}
+ {:private-key root-sk})
+```
+
+The panel reviews the standing order once (deliberative). The execution
+service evaluates the token on each trigger (instant). This separates
+"should we allow this trade?" (slow, thoughtful) from "is now the right
+moment?" (fast, mechanical).
+
+This is actually a natural fit for capability tokens — the constraints
+are baked into the token at issuance time, and the execution service
+just evaluates them against current market data.
+
+### Gap 8: Post-Transaction Lifecycle Is Missing (Medium)
+
+The architecture authorizes the purchase but doesn't cover what
+happens after:
+
+- Price changed between intent and execution (above tolerance?)
+- Partial fulfillment, backorders, substitutions
+- Refunds and returns — who initiates, who approves?
+- Recurring charges (vendor auto-enrolls despite subscription block)
+- Chargebacks and disputes
+
+**Mitigation:** The capability token governs the initial purchase. Post-
+transaction actions (returns, disputes) need their own capability tokens
+— the user (or their agent, with a separate capability) initiates a
+return intent through the same pipeline. The execution service tracks
+order state and validates that return/dispute requests correspond to
+actual executed orders.
+
+### Gap 9: Multi-Agent Budget Races (Medium)
+
+If shopping-agent and travel-agent both request $80 purchases
+simultaneously against a $100 remaining daily budget:
+
+- Both intents pass panel review (each is under budget at review time)
+- Both get tokens signed (race condition)
+- Both could execute, exceeding the daily budget
+
+**Mitigation:** The signing service serializes token issuance against
+the budget. This is a bottleneck by design — you *want* budget
+allocation to be serialized. Use an atomic compare-and-decrement on
+the budget: check remaining → decrement → sign, or reject if
+insufficient. This is a solved problem in financial systems (it's how
+every POS terminal works).
+
+### Gap 10: The Panel Has No Ground Truth Either (Medium)
+
+The panel judges evaluate "is this intent reasonable?" from the same
+information the agent provided. Unless judges independently query
+external sources, they're reviewing the agent's claims, not reality.
+
+If you give the judges external data access, they become more complex,
+slower, and have a larger attack surface. If you don't, they're just
+checking internal consistency — which is what the signing service does.
+
+**Mitigation:** Accept that the panel's unique value is *judgment
+calls* the signing service can't make: "is this pattern suspicious?"
+"is buying 50 copies of one book weird?" "does this goal reference
+make sense?" Factual verification (price, item existence, category)
+belongs in the deterministic realm (Gap 1). The panel does semantic
+review; the execution service does factual verification.
+
+### Summary
+
+| Gap | Severity | Fix difficulty | Key insight |
+|-----|----------|---------------|-------------|
+| No oracle / intent is fiction | **Critical** | Medium | Execution service must verify facts independently |
+| Category classification | High | Medium | Deterministic classification, not AI |
+| Auto-approve undermines model | High | Easy | Retroactive review or eliminate |
+| No feedback loop | High | Medium | Transaction outcomes feed back into panel |
+| Signing service is SPOF | High | Hard | HSM, threshold sigs, serialized budget |
+| Human approval fatigue | Medium | Hard | Batching, progressive trust, rich UX |
+| Latency for real-time | Medium | Medium | Pre-authorized standing orders |
+| Post-transaction lifecycle | Medium | Medium | Separate design needed |
+| Multi-agent budget races | Medium | Medium | Serialized budget allocation |
+| Panel has no ground truth | Medium | Couples with #1 | Panel does judgment, execution does facts |
+
+The architecture's *shape* is right. The separation of concerns, the
+capability token as bridge, the panel for judgment — all sound. The
+gaps are mostly at the **edges**: what happens before the intent (is it
+truthful?), what happens after execution (feedback, disputes), and the
+operational reality of the deterministic realm (the signing service is
+more complex than described).
+
+---
+
+## From Design to Working Code
+
+Standards bodies won't solve this. NIST's AI Agent Authorization
+Concept Paper is due April 2026; by then the AI agent ecosystem will
+have moved three generations forward. The only thing that convinces
+adoption is working code.
+
+Stroopwafel already has the hard parts: Ed25519 signature chains,
+Datalog evaluation with scoped rules and expressions, attenuation
+invariant, third-party blocks, sealing, revocation IDs. What's missing
+for the AI agent use case is a thin integration layer.
+
+### The Shortest Path: MCP Tool Server with Capability Gates
+
+The Model Context Protocol (MCP) is how AI agents connect to tools.
+An MCP tool server can gate its tools behind Stroopwafel verification:
+the agent literally *cannot* call `execute-purchase` without presenting
+a valid capability token — not because a prompt tells it not to, but
+because the tool server verifies the signature chain before dispatching.
+
+```
+┌─────────────┐    MCP     ┌──────────────────────────────┐
+│   Claude /  │◀──────────▶│  MCP Tool Server (Clojure)   │
+│   Agent AI  │  tool calls │                              │
+│             │            │  Tools:                       │
+│             │            │   submit-intent  (no cap req) │
+│             │            │   check-status   (no cap req) │
+│             │            │   execute-purchase (CAP REQ!) │
+│             │            │                              │
+│             │            │  On execute-purchase:         │
+│             │            │   1. Extract token from args  │
+│             │            │   2. sw/verify token          │
+│             │            │   3. sw/evaluate token        │
+│             │            │      against hard policy      │
+│             │            │   4. Only then → execute      │
+└─────────────┘            └──────────────────────────────┘
+```
+
+The demo:
+
+1. **Agent calls `submit-intent`** — structured intent, no capability
+   needed. Returns an intent-id.
+
+2. **Panel evaluates** (could be simulated with three separate LLM
+   calls, or a deterministic mock for the demo). Produces a verdict.
+
+3. **Signing service mints a Stroopwafel token** from the approved
+   verdict. Token is returned to the agent.
+
+4. **Agent calls `execute-purchase` with the token.** The MCP tool
+   server verifies the token (signature chain, Datalog evaluation
+   against hard policy). If valid → executes (or simulates execution).
+   If not → rejects with a clear error.
+
+5. **Agent calls `execute-purchase` without a token, or with an
+   expired/tampered token.** Rejected. The tool doesn't execute.
+   Cryptographic enforcement, not prompt-level.
+
+This is a self-contained demo that fits in a single Clojure project
+with an MCP server, shows the full pipeline, and makes the security
+argument tangible. Someone can run it, try to bypass it, and see that
+the capability gate holds.
+
+### What This Proves
+
+- **Separation of concerns is enforceable**, not just architectural.
+  The AI realm and execution realm are different code paths.
+- **Capability tokens work for AI agents.** Attenuation, sealing,
+  expiry, and Datalog policy evaluation compose naturally with the
+  agent tool-use model.
+- **The enforcement is cryptographic, not prompt-level.** You can't
+  jailbreak a signature verification.
+- **MCP is the natural integration point.** Every major AI framework
+  (Claude, GPT, Gemini) supports MCP or equivalent tool protocols.
+  The capability gate is protocol-level, not model-specific.
+
+### Implementation Sketch (Stroopwafel + MCP)
+
+```clojure
+;; MCP tool handler for execute-purchase
+(defn handle-execute-purchase
+  [{:keys [token item-id quantity]}]
+  (let [;; 1. Deserialize and verify token
+        verified? (sw/verify token {:public-key root-pk})]
+    (if-not verified?
+      {:error "Invalid token: signature verification failed"}
+
+      ;; 2. Evaluate against execution policy
+      (let [result (sw/evaluate token
+                     :authorizer
+                     {:facts    [[:time (System/currentTimeMillis)]
+                                 [:execution-item item-id]
+                                 [:execution-qty quantity]
+                                 [:execution-price (lookup-current-price item-id)]]
+                      :rules    '[{:id   :item-match
+                                   :head [:item-authorized ?item]
+                                   :body [[:approved-purchase ?item ?name ?price ?cat]
+                                          [:execution-item ?item]]}]
+                      :policies '[{:kind  :allow
+                                   :query [[:item-authorized ?item]]}
+                                  {:kind  :deny
+                                   :query [[:requester ?r]]}]})]
+        (if (:valid? result)
+          (do (execute-purchase! item-id quantity)  ;; deterministic
+              (revoke-token! token)                 ;; single-use
+              {:success true :order-id (random-uuid)})
+          {:error "Token valid but policy check failed"})))))
+```
+
+The key line is `(lookup-current-price item-id)` — the execution
+service independently resolves the current price from the vendor API
+(addressing Gap 1), not trusting the price in the intent. The Datalog
+`:when` guard on the token's `:price-ceiling` check catches any
+discrepancy.
+
+---
+
 ## Prior Art and Related Work
 
 ### The Authorization Crisis Is Universally Acknowledged
