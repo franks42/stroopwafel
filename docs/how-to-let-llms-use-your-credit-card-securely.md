@@ -216,7 +216,7 @@ where, and why.
 {:action      :purchase
  :vendor      "amazon.com"
  :item-id     "ASIN:B08X7JK34L"
- :item-name   "Clean Code (Robert C. Martin)"
+ :item-name   "Designing Data-Intensive Applications (Martin Kleppmann)"
  :category    :books
  :price       29.99
  :currency    :USD
@@ -309,7 +309,7 @@ The resulting token (using Stroopwafel as the capability framework):
 ```clojure
 ;; Authority block — what this capability authorizes
 (stroopwafel.core/issue
- {:facts  [[:approved-purchase "ASIN:B08X7JK34L" "Clean Code" 29.99 :books]
+ {:facts  [[:approved-purchase "ASIN:B08X7JK34L" "DDIA" 29.99 :books]
            [:requester "agent-session-7721"]
            [:panel-verdict :approved 2 3]
            [:budget-remaining 470.01]
@@ -636,7 +636,7 @@ The signing service signs it. But **nobody independently verifies the
 facts in the intent.**
 
 - Is the price actually $29.99 on amazon.com right now?
-- Does ASIN:B08X7JK34L actually map to "Clean Code"?
+- Does ASIN:B08X7JK34L actually map to "DDIA"?
 - Is the item actually categorized as "books"?
 
 If the agent hallucinated the ASIN, misreported the price, or
