@@ -590,6 +590,271 @@ All three must join for the rule to fire. Missing any one → no
 
 ---
 
+## Use Case 4: Capability-Gated nREPL
+
+### The Problem
+
+nREPL is all-or-nothing. Once a client connects, it can `eval` anything:
+mutate application state, read secrets from the environment, call
+`System/exit`, `slurp` arbitrary files, `alter-var-root` on any var. The
+protocol has no built-in authorization — it was designed for trusted local
+development.
+
+In shared environments (team dev servers, staging, production debugging,
+educational settings, AI coding agents connected via nREPL), this is a
+liability. You want to give someone REPL access without giving them the
+keys to the kingdom.
+
+### Actors and Roles
+
+```
+┌─────────────┐                  ┌─────────────────────────────┐
+│ Ops Lead    │── issues ───────▶│  nREPL Server               │
+│ (authority) │   root token     │  with wrap-authorize         │
+└─────────────┘                  │  middleware                  │
+                                 │                              │
+┌─────────────┐  connects with   │  Middleware stack:            │
+│ Developer   │──────────────────│   wrap-authorize  ← NEW     │
+│ (dev token) │  attenuated      │   session                   │
+│             │  token           │   interruptible-eval        │
+└─────────────┘                  │   wrap-print                │
+                                 │   ...                       │
+┌─────────────┐  connects with   └─────────────────────────────┘
+│ Observer    │──────────────────▶
+│ (read-only  │  further
+│  token)     │  attenuated
+└─────────────┘
+```
+
+- **Ops lead**: holds root keypair. Issues tokens with role-appropriate
+  capabilities.
+- **Developer**: receives an attenuated token scoped to specific
+  namespaces and operations. Can eval in their namespaces, run tests,
+  inspect state — but not `System/exit` or `alter-var-root` on core vars.
+- **Observer**: receives a further-attenuated read-only token. Can query
+  vars, call `doc`, `source`, read state — but not eval side-effecting
+  forms. Useful for monitoring, debugging by a colleague, or an AI
+  assistant inspecting runtime state.
+
+### Token Hierarchy
+
+```clojure
+;; Ops lead mints full-access token
+(def admin-token
+  (sw/issue
+   {:facts  [[:role :admin]
+             [:allowed-op "eval"]
+             [:allowed-op "lookup"]
+             [:allowed-op "completions"]
+             [:allowed-op "load-file"]]
+    :checks '[{:id    :expiry
+               :query [[:time ?t]]
+               :when  [(< ?t 1709337600000)]}]}
+   {:private-key (:priv ops-kp)}))
+
+;; Ops lead attenuates for a developer — specific namespaces only
+(def dev-token
+  (sw/attenuate
+   admin-token
+   {:checks '[{:id    :ns-restriction
+               :query [[:eval-ns ?ns]]
+               :when  [(or (str/starts-with? ?ns "myapp.api")
+                           (str/starts-with? ?ns "myapp.service")
+                           (str/starts-with? ?ns "myapp.api-test")
+                           (str/starts-with? ?ns "myapp.service-test"))]}
+              {:id    :no-dangerous-forms
+               :query [[:eval-code ?code]]
+               :when  [(not (str/includes? ?code "System/exit"))
+                       (not (str/includes? ?code "alter-var-root"))
+                       (not (str/includes? ?code "spit"))
+                       (not (str/includes? ?code "sh "))]}]}))
+
+;; Developer attenuates further for an observer — read-only
+(def observer-token
+  (sw/attenuate
+   dev-token
+   {:checks [{:id    :read-only-ops
+              :query [[:allowed-op "eval"]]}  ;; requires eval to exist
+             {:id    :no-mutation
+              :query [[:eval-code ?code]]
+              :when  [(not (str/includes? ?code "reset!"))
+                      (not (str/includes? ?code "swap!"))
+                      (not (str/includes? ?code "def "))
+                      (not (str/includes? ?code "alter "))]}]}))
+
+;; Seal the observer token — they can't attenuate further
+(def sealed-observer (sw/seal observer-token))
+```
+
+### Authorizer Policy (Server-Side)
+
+The nREPL server's middleware evaluates the token against its hard policy:
+
+```clojure
+(sw/evaluate token
+  :authorizer
+  {:facts    [[:time (System/currentTimeMillis)]
+              [:eval-ns (or target-ns "user")]
+              [:eval-code code-string]
+              [:op op-name]]
+   :rules    '[{:id   :op-permitted
+                :head [:op-permitted ?op]
+                :body [[:allowed-op ?op]
+                       [:op ?op]]}]
+   :policies '[{:kind  :allow
+                :query [[:op-permitted ?op]]}
+               {:kind  :deny
+                :query [[:role ?r]]}]})
+```
+
+### Where to Inject: nREPL Middleware
+
+nREPL uses a middleware stack identical in pattern to Ring. Each
+middleware wraps the next handler: `(fn [handler] (fn [msg] ...))`.
+Messages are maps with `:op`, `:code`, `:session`, `:ns`, etc. The
+stack is composed in `nrepl.server/default-handler`.
+
+The injection points are minimal and well-defined:
+
+**Server-side: one new middleware function (~60 lines).**
+
+A `wrap-authorize` middleware sits at the outer edge of the stack —
+it intercepts every message before any other middleware sees it.
+
+```clojure
+(ns myapp.nrepl.authorize
+  (:require [nrepl.middleware :refer [set-descriptor!]]
+            [nrepl.transport :as t]
+            [stroopwafel.core :as sw]))
+
+(def ^:private root-public-key
+  ;; loaded from config, not hardcoded
+  ...)
+
+(defn wrap-authorize
+  "nREPL middleware that verifies a Stroopwafel capability token
+   on every message. Messages without a valid token are rejected.
+
+   The token is expected in the :stroopwafel/token field of the
+   message (set during session establishment)."
+  [handler]
+  (fn [{:keys [op code ns stroopwafel/token transport] :as msg}]
+    (if (= op "describe")
+      ;; Always allow describe — clients need it to discover ops
+      (handler msg)
+
+      (let [verified? (and token (sw/verify token {:public-key root-public-key}))
+            result    (when verified?
+                        (sw/evaluate token
+                          :authorizer
+                          {:facts    [[:time (System/currentTimeMillis)]
+                                      [:op op]
+                                      [:eval-ns (or ns "user")]
+                                      [:eval-code (or code "")]]
+                           :rules    '[{:id   :op-permitted
+                                        :head [:op-permitted ?op]
+                                        :body [[:allowed-op ?op]
+                                               [:op ?op]]}]
+                           :policies '[{:kind  :allow
+                                        :query [[:op-permitted ?op]]}
+                                       {:kind  :deny
+                                        :query [[:role ?r]]}]}))]
+        (if (:valid? result)
+          (handler msg)
+          (t/send transport
+            (nrepl.misc/response-for msg
+              :status #{:error :unauthorized :done}
+              :error "Unauthorized: invalid or insufficient capability token")))))))
+
+(set-descriptor! #'wrap-authorize
+  {:requires #{}
+   :expects #{"eval" "load-file" "lookup" "completions"}
+   :handles {}})
+```
+
+**Server startup: one extra argument.**
+
+```clojure
+;; Standard nREPL startup — no changes to nREPL source needed
+(require '[nrepl.server :as nrepl-server])
+(require '[myapp.nrepl.authorize :as authz])
+
+(nrepl-server/start-server
+  :port 7888
+  :handler (nrepl-server/default-handler #'authz/wrap-authorize))
+```
+
+The `default-handler` function already accepts additional middleware
+(`server.clj:148` — `(apply merge default-middleware additional-middleware)`
+then linearizes the stack). No changes to nREPL source code required.
+
+**Client-side: token in session init.**
+
+The client includes the serialized token in its initial `clone` message
+(session creation) or as a field on every message. For CIDER, this could
+be a custom connection parameter; for a programmatic client, it's one
+extra field:
+
+```clojure
+;; Programmatic nREPL client
+(require '[nrepl.core :as nrepl])
+
+(with-open [conn (nrepl/connect :port 7888)]
+  (let [client (nrepl/client conn 1000)]
+    ;; Include token in every eval
+    (nrepl/message client
+      {:op "eval"
+       :code "(+ 1 2)"
+       :ns "myapp.api"
+       :stroopwafel/token serialized-token})))
+```
+
+For IDE integration (CIDER, Calva), a thin client-side middleware
+or connection wrapper injects the token into outgoing messages
+automatically — the user provides the token once at connection time.
+
+### What Changes, What Doesn't
+
+| Component | Changes needed |
+|-----------|---------------|
+| **nREPL server source** | None. Middleware stack is extensible by design. |
+| **wrap-authorize middleware** | New: ~60 lines of Clojure. Lives in your project, not in nREPL. |
+| **Server startup** | One argument: pass `#'wrap-authorize` to `default-handler`. |
+| **Client** | Include token in messages. For programmatic clients, one extra field. For IDEs, a connection wrapper. |
+| **Token management** | Ops lead mints tokens with `sw/issue`, attenuates per role with `sw/attenuate`. Standard Stroopwafel API. |
+
+The total server-side change is one middleware function and one line
+in the server startup configuration. The nREPL protocol is not
+modified — the token travels as an extra field in standard bencode
+messages, which nREPL's transport layer passes through transparently
+(unknown fields are preserved in the message map).
+
+### Limitations and Caveats
+
+**Code string inspection is a heuristic, not a guarantee.** Checking
+`(str/includes? code "System/exit")` catches literal usage but not
+obfuscation: `(let [f (resolve 'System/exit)] (f 0))`. For a hardened
+deployment, the eval middleware itself would need a sandboxed
+classloader or a code-analysis step (e.g., clj-kondo as a pre-eval
+gate). The capability token provides the authorization decision; the
+enforcement depth depends on the eval sandbox.
+
+**Namespace restriction is advisory if eval is unrestricted.** A user
+with `eval` access can `(in-ns 'clojure.core)` unless the eval sandbox
+also prevents namespace switching. The token check on `:eval-ns` catches
+the declared namespace in the message, but not runtime `in-ns` calls
+within the evaluated code. A production deployment would pair the
+capability token with a sandboxed evaluator that restricts namespace
+access at the runtime level.
+
+**Token transport.** bencode (nREPL's default wire format) handles
+arbitrary byte strings, so a serialized Stroopwafel token (CEDN bytes)
+can travel as a message field. EDN transport would use CEDN's `#bytes`
+tagged literal. The nREPL transport layer is format-agnostic — it
+passes through whatever the client sends.
+
+---
+
 ## Quick Reference: Stroopwafel API
 
 | Function | Who calls it | What it does |
