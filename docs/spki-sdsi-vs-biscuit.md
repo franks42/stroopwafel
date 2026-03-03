@@ -1626,6 +1626,13 @@ require no changes to the core Datalog evaluation engine.
   https://ai.google/research/pubs/pub41892
 - **Distributed Certificate-Chain Discovery in SPKI/SDSI** (Schwoon et al.)
   https://research.cs.wisc.edu/wpis/papers/TR1526.pdf
+- **Anonymous Credentials: An Illustrated Primer** (Matthew Green, March 2026)
+  https://blog.cryptographyengineering.com/2026/03/02/anonymous-credentials-an-illustrated-primer/
+  Blind signatures, ZK selective disclosure, N-time-use credentials, banlist
+  revocation. Complementary to capability tokens — anonymous credentials
+  address unlinkability at the consumer-facing edge (proving eligibility
+  without revealing identity), while capability tokens like Stroopwafel
+  handle the named authorization chain behind that edge.
 
 ### Adjacent Systems (Policy Management)
 
