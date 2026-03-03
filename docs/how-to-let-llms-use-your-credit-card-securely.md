@@ -56,6 +56,124 @@ time-limited, scope-constrained, and verifiable by deterministic code.
 
 ---
 
+## Why Should We Trust the Panel More Than the Requester?
+
+This is the foundational question. If the panel of AI judges isn't
+structurally more trustworthy than the requesting AI, the entire
+architecture is theater — more expensive theater with better diagrams.
+If it is, we have a chance to construct an approach that is less error-
+prone than any single AI acting alone, and potentially more reliable
+than an equivalent panel of human judges for routine transactions.
+
+### The Structural Advantage
+
+The panel is more trustworthy not because the AIs are smarter, but
+because of **structural properties** — the same properties that make
+compliance officers more trustworthy than traders. Not intelligence;
+incentives, context, and mandate.
+
+**1. No motivated reasoning.**
+
+The requesting AI has a goal: "help the user buy things." That creates
+optimization pressure toward action. The AI is incentivized — by its
+objective function, its system prompt, its conversational history — to
+find ways to *complete the task*. When a user says "buy me something
+nice," the agent is oriented toward buying, not toward not-buying.
+
+The panel judges have no stake in the outcome. They're asked "is this
+reasonable?" not "make this happen." There's no accumulated
+conversational pressure to approve. No "the user has been asking about
+this for 20 minutes and I should follow through." The judge sees a
+cold, structured intent and a policy document. That's it.
+
+**2. Clean context vs. degraded context.**
+
+The requesting AI might be on turn 200 of a conversation. Its context
+window is full of user preferences, browsing history, product
+comparisons, and possibly subtle prompt injections that drifted its
+behavior over the session. By turn 200, the agent may have lost track
+of constraints mentioned at turn 3.
+
+Each panel judge gets a fresh context: the structured intent + the
+user's standing policy. No accumulated drift. No session history to
+get confused about. No prompt injection that slowly redirected the
+agent's priorities over many turns.
+
+**3. Narrow task vs. open-ended task.**
+
+The requesting AI has an open-ended mandate ("help the user shop").
+Open-ended tasks are exactly where LLMs hallucinate and make mistakes
+— too many degrees of freedom, too much context to track.
+
+The panel's task is narrow and well-defined: "does this specific
+intent conform to this specific policy?" This is a classification task
+with clear criteria. Narrow classification with explicit rules is
+where LLMs are most reliable.
+
+**4. Adversarial posture vs. helpful posture.**
+
+The requesting AI is prompted to be helpful — it wants to say yes. The
+panel judges can be prompted to be skeptical — their job is to find
+reasons to say no. "Is there a reason this should NOT be approved?"
+elicits fundamentally different reasoning than "how can I help you buy
+this?"
+
+**5. Independence breaks correlated failure.**
+
+The requesting AI is a single point of failure. If it's compromised
+(prompt injection, context poisoning, hallucination cascade),
+everything it does is wrong. The panel is N independent evaluations.
+A prompt injection that compromised the requester's conversation
+doesn't reach the judges — they see a structured intent, not the
+requester's full context. For all judges to fail simultaneously, the
+adversarial content must be in the *structured intent itself*, and
+must fool N heterogeneous models independently.
+
+### Could AI Judges Outperform Human Judges?
+
+For this specific task — high-volume, policy-conformance evaluation
+with clear criteria — the answer may be yes:
+
+| Property | Human judge | AI judge |
+|----------|-----------|---------|
+| **Fatigue** | Friday afternoon → rubber-stamp | Evaluation #1 = evaluation #10,000 |
+| **Consistency** | Different mood, different day → different decision | Same intent + same policy = same verdict, always |
+| **Corruption** | Can be bribed, socially pressured | No social attack surface |
+| **Speed** | Minutes per evaluation | Seconds |
+| **Availability** | 8 hours/day, needs breaks | 24/7 |
+| **Emotional bias** | "It's for a good cause" → approve | Evaluates against policy, not sentiment |
+| **Pattern detection** | Fatigue degrades recognition | "50 copies of the same book is weird" — LLMs are good at this |
+| **Scale** | Quality degrades with volume | Quality is constant |
+
+Where human judges remain better: genuinely novel situations, deep
+contextual understanding, "something feels wrong but I can't articulate
+why." But those cases are rare in routine transaction evaluation — and
+when they do arise, the escalation thresholds in the architecture route
+them to a human anyway.
+
+### The Honest Caveat
+
+The panel doesn't need to be *perfect*. It needs to satisfy a weaker
+condition:
+
+> **P(bad outcome | panel + signing service + execution verification)
+> is much less than P(bad outcome | agent acting alone)**
+
+The architecture is defense in depth. The panel catches intent-level
+problems (motivated reasoning, manipulation, hallucinated goals). The
+signing service catches policy violations (amount limits, category
+blocks, rate limits). The execution service catches factual
+inaccuracies (wrong price, nonexistent item, misclassified category).
+The human-in-the-loop catches high-value edge cases. No single layer
+is perfect; the composition is what matters.
+
+The real question isn't "can we trust the panel?" — it's "is the
+panel + deterministic enforcement *better than the alternative*?" And
+the alternative today is: give the AI your credentials and hope for
+the best. Against that baseline, the bar is low.
+
+---
+
 ## Architecture
 
 ```
