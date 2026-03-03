@@ -67,10 +67,10 @@
   "Returns the set of origin indices trusted by the given block.
 
    - Authority block (0): trusts `#{0 :authorizer}`
-   - Block N: trusts `#{0 N :authorizer}`
-   - Authorizer (nil): trusts `#{0 :authorizer}`"
+   - Block N (positive int): trusts `#{0 N :authorizer}`
+   - Authorizer (nil or :authorizer): trusts `#{0 :authorizer}`"
   [block-index]
-  (if (and block-index (pos? block-index))
+  (if (and (number? block-index) (pos? block-index))
     #{0 block-index :authorizer}
     #{0 :authorizer}))
 
