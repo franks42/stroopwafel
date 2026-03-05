@@ -608,6 +608,69 @@ For AI agent transactions, bearer semantics are insufficient:
 | Audit trail | "A token was presented" | "Agent X signed this specific request with its key" |
 | Multi-agent environments | Agents can share/steal tokens | Each agent's capability is cryptographically bound to its key |
 
+### Holder Binding: Industry Context (or, SPKI Had This Right in 1996)
+
+The need to bind a token to its intended presenter is not new, not
+unusual, and not something we invented. It's a universally recognized
+gap in bearer-token systems that the industry has spent decades
+rediscovering and re-patching — after SPKI/SDSI solved it from the
+start.
+
+**The wheel-reinvention timeline:**
+
+| Year | System | Holder binding |
+|------|--------|---------------|
+| **1996** | **SPKI/SDSI** | **(issuer-key, subject-key, authorization, delegation?)** — subject's public key is the identity. Authorization is bound to the key holder from day one. Problem solved. |
+| 2006 | OAuth 1.0 | Signed requests — had proof-of-possession built in |
+| 2012 | OAuth 2.0 | Dropped signatures for bearer tokens. Simpler! Faster! ...and now anyone with the token is "authorized" |
+| 2014 | Macaroons | Bearer, but HMAC tail enables contextual binding (derive a request-specific token from the shared secret) |
+| 2020 | RFC 8705 | mTLS certificate-bound tokens — bolt-on fix for OAuth 2.0's bearer problem at the transport layer |
+| 2021 | Biscuit | Bearer, public-key signatures, no holder binding. Official workaround: per-request attenuation (10-second window) |
+| 2023 | RFC 9449 (DPoP) | Application-level proof-of-possession — another bolt-on fix for OAuth 2.0 bearer tokens |
+| 2024 | GNAP (RFC 9635) | Key-bound **by default**. Bearer mode is the opt-in exception. Full circle back to where SPKI started. |
+| 2024 | FAPI 2.0 | **Mandates** sender-constrained tokens for financial APIs. Bearer not allowed. |
+
+SPKI's 5-tuple `(issuer, subject, delegation, authorization, validity)`
+put the subject's key in the certificate itself. There was never a
+separate "how do we bind this to the presenter?" question — the
+certificate *is* the binding. The authorization and the identity are
+one artifact.
+
+The OAuth/Biscuit lineage took a different path: separate the token
+(authorization) from the presenter (identity), then spend the next
+decade bolting identity back on. DPoP (RFC 9449) is literally "the
+client signs each request with the key that's referenced in the token"
+— which is exactly what SPKI certificates did, except SPKI didn't
+need a separate RFC because it was the foundational design.
+
+**Biscuit's specific gap:** Biscuit's public-key construction actually
+makes holder binding *harder* than macaroons. In macaroons, deriving a
+new macaroon requires the current HMAC tag (a shared secret between
+holder and verifier), so attenuation implicitly proves possession. In
+Biscuit, the ephemeral private key is in the token's proof field —
+anyone holding the token can attenuate it. Attenuation ≠ proof-of-
+possession. Biscuit [issue #73](https://github.com/biscuit-auth/biscuit/issues/73)
+considered a challenge-response PKI scheme early on but dropped it in
+favor of sealed tokens. The [per-request attenuation recipe](https://doc.biscuitsec.org/recipes/per-request-attenuation.html)
+is the documented workaround: attenuate to a 10-second window with a
+specific endpoint. But a thief who intercepts within that window still
+wins.
+
+**GNAP gets it right — by going back to SPKI's insight.** RFC 9635
+makes key binding the default: unless the client explicitly requests
+bearer mode, all tokens are bound to the client's key. The spec states:
+*"If the bearer token flag is omitted, the access token is bound to
+the key used by the client instance."* Twenty-eight years after SPKI,
+the standards world rediscovered that authorization should be bound to
+a key by default.
+
+**What Stroopwafel does:** `[:authorized-agent-key agent-pk]` in the
+authority block + the agent signs each request. This is the SPKI model
+expressed as Datalog facts — the token carries the subject's key, the
+presenter proves possession, the Datalog join binds them. No separate
+protocol, no bolt-on RFC, no 10-second attenuation workaround. The
+authorization and the identity binding are one evaluation.
+
 ---
 
 ## Why Capabilities (Not Permissions or Roles)
