@@ -94,7 +94,13 @@ stroopwafel/
 │   ├── biscuit-kex-analysis.md ← original research: Biscuit, KEX, and initial gap analysis
 │   ├── biscuit-gap-analysis.md ← current gap status vs Biscuit spec
 │   ├── bytes-support.md        ← CEDN #bytes feature request (implemented)
-│   └── datalog-expressions-clj-design.md ← expression design: :when, :let, built-ins
+│   ├── datalog-expressions-clj-design.md ← expression design: :when, :let, built-ins
+│   ├── stroopwafel-use-cases-examples.md ← 4 worked use cases with REPL snippets
+│   ├── how-to-let-llms-use-your-credit-card-securely.md ← AI agent transaction security design
+│   ├── spki-sdsi-vs-biscuit.md ← SPKI/SDSI vs Biscuit comparison (external contribution)
+│   ├── spki-sdsi-vs-biscuit-concerns.md ← review concerns on the above
+│   ├── spki-sdsi-vs-biscuit-gemini.md ← Gemini's take on SPKI vs Biscuit
+│   └── spki-sdsi-vs-biscuit-gpt.md   ← GPT's take on SPKI vs Biscuit
 ├── src/
 │   └── stroopwafel/
 │       ├── core.clj            ← public API: new-keypair, issue, attenuate, seal, verify, evaluate, revocation-ids, graph, third-party-request, create-third-party-block, append-third-party
@@ -327,6 +333,44 @@ facts are invisible to the authorizer (backward compatible).
 | Proof visualization | No | ✓ | Stroopwafel-only feature |
 | Third-party blocks | Yes | ✓ | — |
 | Cross-platform | Multi-lang | JVM only | Phase 4 (bb ready) |
+
+## Current Work Direction (as of v0.6.0)
+
+With Biscuit feature parity achieved, the focus has shifted to:
+
+### Applied Use Cases & Documentation
+- **Use cases doc** (`docs/stroopwafel-use-cases-examples.md`): 4 worked examples:
+  1. API gateway chain (attenuation, time-limited, sealed)
+  2. IoT device provisioning (factory → fleet → device hierarchy)
+  3. Cross-org federation with third-party blocks
+  4. Capability-gated nREPL (middleware injection, namespace/op restrictions)
+- **SPKI/SDSI comparison** (`docs/spki-sdsi-vs-biscuit.md`): deep comparison of
+  SPKI's distributed certificates vs Biscuit's centralized authorizer model.
+  Review concerns saved separately.
+
+### AI Agent Transaction Security
+- **Design doc** (`docs/how-to-let-llms-use-your-credit-card-securely.md`): 1400+ lines
+- Architecture: separation of intent (AI realm) from execution (deterministic realm)
+- Panel-of-judges: heterogeneous LLMs evaluate structured intents against user policy
+- Capability tokens as the cryptographic bridge between realms
+- **Agent authentication via signed requests** (not bearer tokens):
+  - Token carries `[:authorized-agent-key agent-pk]` — bound to specific agent
+  - Agent signs each request with its private key
+  - Execution service verifies request signature against token's agent key
+  - Datalog join: `[:authorized-agent-key ?k]` ∧ `[:request-verified-agent-key ?k]`
+  - One round trip, no separate authN protocol
+  - This is the SPKI model (subject-key binding) expressed as Datalog facts
+- **Holder binding landscape**: Biscuit is bearer-only (no PoP mechanism).
+  Industry trajectory: OAuth bearer → DPoP/mTLS patches → GNAP key-bound-by-default.
+  SPKI/SDSI had key-bound authorization in 1996.
+- Prior art survey: ISACA, CSA, OWASP, NIST, Visa TAP, ERC-8004, AgentSpec, ABC
+- 10 known gaps with severity ratings and mitigations
+- Next step: MCP tool server prototype with Stroopwafel capability gates
+
+### Bug Fix (in this cycle)
+- `datalog.clj:73` `trusted-origins` — `(pos? :authorizer)` ClassCastException
+  when authorizer rules provided without `:trusted-external-keys`. Fixed by
+  changing guard to `(number? block-index)`.
 
 ## Reference Repos (local)
 
