@@ -183,24 +183,31 @@ the best. Against that baseline, the bar is low.
 │  │  Agent AI  │───────────────▶│   Panel of AI Judges    │ │
 │  │ (requester)│    intent      │  (independent models,   │ │
 │  │            │                │   evaluate against      │ │
-│  │            │◀───────────────│   user's standing       │ │
-│  │            │    verdict     │   policy)               │ │
-│  └─────┬──────┘  (structured)  └────────────────────────┘ │
+│  │ holds:     │◀───────────────│   user's standing       │ │
+│  │  agent-sk  │    verdict     │   policy)               │ │
+│  │  agent-pk  │  (structured)  └────────────────────────┘ │
+│  └─────┬──────┘                                            │
 │        │                                                   │
 └────────┼───────────────────────────────────────────────────┘
-         │ presents capability token
+         │ signed request + capability token
+         │ (request signed by agent-sk;
+         │  token contains agent-pk, signed by authority)
          ▼
 ┌──────────────────── DETERMINISTIC REALM ──────────────────┐
 │                                                            │
 │  ┌────────────────┐  token  ┌──────────────────────────┐  │
 │  │ Signing Service│────────▶│   Execution Service      │  │
 │  │ (mints token   │         │  (shopping, trading,     │  │
-│  │  from verdict) │         │   payments)              │  │
-│  │                │         │                          │  │
-│  │ NOT an AI.     │         │  Verifies token against  │  │
-│  │ Deterministic  │         │  hard policy. Executes   │  │
-│  │ code only.     │         │  only with valid cap.    │  │
-│  └────────────────┘         └──────────────────────────┘  │
+│  │  from verdict, │         │   payments)              │  │
+│  │  binds to      │         │                          │  │
+│  │  agent-pk)     │         │  1. Verify token (auth   │  │
+│  │                │         │     sig chain)           │  │
+│  │ NOT an AI.     │         │  2. Verify request sig   │  │
+│  │ Deterministic  │         │     against token's      │  │
+│  │ code only.     │         │     agent-pk             │  │
+│  └────────────────┘         │  3. Datalog policy eval  │  │
+│                              │  4. Only then → execute  │  │
+│                              └──────────────────────────┘  │
 │                                                            │
 └────────────────────────────────────────────────────────────┘
 ```
@@ -310,7 +317,7 @@ The resulting token (using Stroopwafel as the capability framework):
 ;; Authority block — what this capability authorizes
 (stroopwafel.core/issue
  {:facts  [[:approved-purchase "ASIN:B08X7JK34L" "DDIA" 29.99 :books]
-           [:requester "agent-session-7721"]
+           [:authorized-agent-key agent-pk-bytes]  ;; bound to requesting agent
            [:panel-verdict :approved 2 3]
            [:budget-remaining 470.01]
            [:vendor "amazon.com"]]
@@ -327,7 +334,11 @@ The resulting token (using Stroopwafel as the capability framework):
 
 The token is handed to the agent AI. The agent cannot modify the
 authority block (attenuation can only add restrictions, never expand
-authority). The agent presents this token to the execution service.
+authority). The agent signs its execution request with its private key
+and presents both the signed request and the token to the execution
+service. The execution service verifies the request signature against
+the `[:authorized-agent-key]` in the token — proving the presenter is
+the agent the panel approved (see "Agent Authentication" above).
 
 ### Phase 4: Execution
 
@@ -469,7 +480,7 @@ the token.
 | **Single point of failure** (one bad AI decision) | Dual-control: panel quorum + signing service + execution policy |
 | **Scope creep** (AI gradually expands its authority) | User policy is immutable by AI; capabilities are per-transaction |
 | **Replay attacks** (reuse a capability token) | Time-limited tokens, single-use execution IDs, revocation |
-| **Token theft** (attacker steals capability) | Short expiry (15 min), sealed tokens, specific item/price |
+| **Token theft** (attacker steals capability) | Signed-request binding: token alone is useless without agent's private key. Plus short expiry, sealing, specific item/price |
 | **Budget exhaustion** (many small legitimate purchases) | Daily limits, transaction rate limits, cooldown periods |
 
 ### Threats NOT fully addressed
@@ -483,13 +494,132 @@ the token.
 
 ---
 
+## Agent Authentication: Signed Requests, Not Bearer Tokens
+
+A critical insight: in a multi-agent environment, **bearer tokens are
+not enough**. If the capability token is a bearer artifact — whoever
+holds it can use it — then token theft equals authority theft. An AI
+agent might leak its token into a tool call, a log message, a response
+to a prompt injection, or a debug dump. A compromised neighboring agent
+running in the same container could intercept it.
+
+More fundamentally: the panel approved a specific agent's request. If a
+different agent can present the resulting token, the panel's judgment
+is decoupled from execution — the entire trust chain breaks.
+
+### The Solution: The Request IS the Authentication
+
+Instead of a separate challenge-response protocol, the agent **signs
+its request** with its own private key. The signed request simultaneously
+proves identity (only the key holder could sign it), declares intent
+(the content is explicit), and binds to the capability (the token
+references the agent's public key).
+
+```
+Agent AI                                     Execution Service
+────────                                     ─────────────────
+1. Agent holds:
+   - its own keypair (agent-sk, agent-pk)
+   - capability token (signed by authority,
+     contains [:authorized-agent-key agent-pk])
+
+2. Agent signs request:
+   { :action   "purchase"
+     :item-id  "ASIN:B08X7JK34L"
+     :quantity 1
+     :nonce    <unique-per-request>        ──▶ 3. Execution service:
+     :token    <capability-token> }              a. Verify token (authority sig chain)
+   signed with agent-sk                          b. Extract [:authorized-agent-key] from token
+                                                 c. Verify request signature against that key
+                                                 d. Check request content matches token constraints
+                                                 e. Only then → execute
+```
+
+One round trip. No separate authN protocol. The signed request is
+self-contained proof of both identity and intent.
+
+### Why This Works
+
+**Non-transferability.** The token carries `[:authorized-agent-key
+<agent-pk>]`. Even if the token is stolen, the thief cannot produce a
+valid signed request without `agent-sk`. The token alone is useless.
+
+**Intent binding.** The agent signs the specific action it wants to
+perform. The execution service verifies that the signed content matches
+the token's constraints. An agent cannot sign a request for item X and
+have it authorize item Y — the Datalog evaluation catches mismatches.
+
+**Replay prevention.** Each request includes a unique nonce. The execution
+service rejects duplicate nonces. Combined with token expiry, the window
+for replay is minimal.
+
+**No key distribution problem.** The signing service mints the token with
+`[:authorized-agent-key agent-pk]` at issuance time — it already knows
+which agent requested the capability. The agent generates its own keypair
+at startup (ephemeral per session, or persistent per agent identity).
+
+### The Datalog Join
+
+The execution service's authorizer ties it together:
+
+```clojure
+(sw/evaluate token
+  :authorizer
+  {:facts    [[:time (System/currentTimeMillis)]
+              [:execution-item "ASIN:B08X7JK34L"]
+              [:execution-qty 1]
+              [:execution-price (lookup-current-price "ASIN:B08X7JK34L")]
+              [:request-verified-agent-key agent-pk-from-signature]]
+   :rules    '[{:id   :agent-bound
+                :head [:agent-authorized ?key]
+                :body [[:authorized-agent-key ?key]
+                       [:request-verified-agent-key ?key]]}
+               {:id   :item-match
+                :head [:item-authorized ?item]
+                :body [[:approved-purchase ?item ?name ?price ?cat]
+                       [:execution-item ?item]]}]
+   :policies '[{:kind  :allow
+                :query [[:agent-authorized ?key]
+                        [:item-authorized ?item]]}
+               {:kind  :deny
+                :query [[:execution-item ?item]]}]})
+```
+
+Two facts must join: `[:authorized-agent-key ?key]` (from the token,
+signed by the authority) and `[:request-verified-agent-key ?key]` (from
+the execution service, after verifying the request signature). If they
+don't match — the presenter isn't the authorized agent — the policy
+denies.
+
+### Contrast with Biscuit
+
+Biscuit is deliberately agnostic about requester authentication. Tokens
+are bearer artifacts — possession is authorization. This is a design
+choice, not an oversight: it simplifies the model and works well when
+tokens are short-lived and transport is secure (TLS).
+
+For AI agent transactions, bearer semantics are insufficient:
+
+| Property | Bearer (Biscuit default) | Signed request (this architecture) |
+|----------|--------------------------|-----------------------------------|
+| Token theft | Attacker can use token | Token alone is useless without agent's private key |
+| Agent impersonation | Any process with the token appears authorized | Must prove key possession per request |
+| Panel trust chain | Panel approved "someone" | Panel approved *this specific agent*, execution verifies it's the same agent |
+| Audit trail | "A token was presented" | "Agent X signed this specific request with its key" |
+| Multi-agent environments | Agents can share/steal tokens | Each agent's capability is cryptographically bound to its key |
+
+---
+
 ## Why Capabilities (Not Permissions or Roles)
 
 Capability tokens are the right primitive for this architecture because:
 
-**Bearer model.** The AI presents the token; the execution service
-validates it. No identity lookup, no session management, no "who is
-this AI and what role does it have?" The token carries its own authority.
+**Signed-request model.** The capability token names the authorized
+agent's public key. The agent signs each request. The execution service
+verifies both the capability chain (authority → token) and the request
+signature (agent → request). No separate identity lookup, no session
+management — the cryptography binds identity, intent, and authorization
+in a single verifiable package.
 
 **Attenuation.** The signing service can mint a broad capability; the
 AI (or any intermediary) can only narrow it further. A token for
@@ -572,10 +702,13 @@ raw credentials, but:
 |---------|---------------------|
 | User's standing policy | Root authority configuration (input to signing service) |
 | Approved intent | Authority block facts + checks |
+| Agent identity binding | `[:authorized-agent-key agent-pk]` fact in authority block |
+| Request authentication | Agent signs request; execution service verifies against token's agent key |
 | Panel verdict | Third-party block (signed by panel service key) |
 | Human approval | Third-party block (signed by user's approval key) |
 | Per-transaction constraints | `:when` guards (price ceiling, time expiry, budget) |
 | Execution service policy | Authorizer (`:facts`, `:rules`, `:policies`) |
+| AuthN/AuthZ join | Datalog rule joining `[:authorized-agent-key ?k]` with `[:request-verified-agent-key ?k]` |
 | Single-use enforcement | Execution ID check + revocation after use |
 | Emergency stop | Revoke the signing service's key or all issued tokens |
 | Audit trail | `revocation-ids` + `evaluate :explain? true` |
@@ -933,8 +1066,15 @@ the capability gate holds.
 - **Capability tokens work for AI agents.** Attenuation, sealing,
   expiry, and Datalog policy evaluation compose naturally with the
   agent tool-use model.
+- **Agent authentication without a separate protocol.** The agent
+  signs its request; the execution service verifies the signature
+  against the token's authorized key. AuthN and authZ collapse into
+  a single verification: signed request + signed capability + Datalog
+  join. No challenge-response, no session tokens, no separate identity
+  provider.
 - **The enforcement is cryptographic, not prompt-level.** You can't
-  jailbreak a signature verification.
+  jailbreak a signature verification. A stolen token is useless without
+  the agent's private key. A forged request fails signature verification.
 - **MCP is the natural integration point.** Every major AI framework
   (Claude, GPT, Gemini) supports MCP or equivalent tool protocols.
   The capability gate is protocol-level, not model-specific.
@@ -944,39 +1084,60 @@ the capability gate holds.
 ```clojure
 ;; MCP tool handler for execute-purchase
 (defn handle-execute-purchase
-  [{:keys [token item-id quantity]}]
-  (let [;; 1. Deserialize and verify token
-        verified? (sw/verify token {:public-key root-pk})]
-    (if-not verified?
-      {:error "Invalid token: signature verification failed"}
+  [{:keys [signed-request]}]
+  (let [{:keys [token item-id quantity nonce signature agent-pk]}
+        (parse-signed-request signed-request)
 
-      ;; 2. Evaluate against execution policy
-      (let [result (sw/evaluate token
-                     :authorizer
-                     {:facts    [[:time (System/currentTimeMillis)]
-                                 [:execution-item item-id]
-                                 [:execution-qty quantity]
-                                 [:execution-price (lookup-current-price item-id)]]
-                      :rules    '[{:id   :item-match
-                                   :head [:item-authorized ?item]
-                                   :body [[:approved-purchase ?item ?name ?price ?cat]
-                                          [:execution-item ?item]]}]
-                      :policies '[{:kind  :allow
-                                   :query [[:item-authorized ?item]]}
-                                  {:kind  :deny
-                                   :query [[:requester ?r]]}]})]
-        (if (:valid? result)
-          (do (execute-purchase! item-id quantity)  ;; deterministic
-              (revoke-token! token)                 ;; single-use
-              {:success true :order-id (random-uuid)})
-          {:error "Token valid but policy check failed"})))))
+        ;; 1. Verify request signature (authN — proves the presenter
+        ;;    holds the private key corresponding to agent-pk)
+        request-authentic? (crypto/verify-signature
+                             (request-bytes item-id quantity nonce token)
+                             signature agent-pk)]
+    (if-not request-authentic?
+      {:error "Invalid request signature: agent authentication failed"}
+
+      ;; 2. Verify token signature chain (authority → token)
+      (let [verified? (sw/verify token {:public-key root-pk})]
+        (if-not verified?
+          {:error "Invalid token: authority signature verification failed"}
+
+          ;; 3. Evaluate against execution policy — the Datalog join
+          ;;    binds the authenticated agent key to the token's
+          ;;    authorized agent key
+          (let [result (sw/evaluate token
+                         :authorizer
+                         {:facts    [[:time (System/currentTimeMillis)]
+                                     [:execution-item item-id]
+                                     [:execution-qty quantity]
+                                     [:execution-price (lookup-current-price item-id)]
+                                     [:request-verified-agent-key agent-pk]]
+                          :rules    '[{:id   :agent-bound
+                                       :head [:agent-authorized ?key]
+                                       :body [[:authorized-agent-key ?key]
+                                              [:request-verified-agent-key ?key]]}
+                                      {:id   :item-match
+                                       :head [:item-authorized ?item]
+                                       :body [[:approved-purchase ?item ?name ?price ?cat]
+                                              [:execution-item ?item]]}]
+                          :policies '[{:kind  :allow
+                                       :query [[:agent-authorized ?key]
+                                               [:item-authorized ?item]]}
+                                      {:kind  :deny
+                                       :query [[:execution-item ?item]]}]})]
+            (if (:valid? result)
+              (do (execute-purchase! item-id quantity)  ;; deterministic
+                  (revoke-token! token)                 ;; single-use
+                  {:success true :order-id (random-uuid)})
+              {:error "Policy check failed: agent not authorized or constraints violated"})))))))
 ```
 
-The key line is `(lookup-current-price item-id)` — the execution
-service independently resolves the current price from the vendor API
-(addressing Gap 1), not trusting the price in the intent. The Datalog
-`:when` guard on the token's `:price-ceiling` check catches any
-discrepancy.
+Two key lines: `(crypto/verify-signature ...)` proves the request came
+from the agent whose key is in the token. `(lookup-current-price item-id)`
+independently resolves the current price from the vendor API (addressing
+Gap 1), not trusting the price in the intent. The Datalog `:agent-bound`
+rule joins the two facts — if the request signer isn't the authorized
+agent, the policy denies regardless of whether the token is otherwise
+valid.
 
 ---
 
