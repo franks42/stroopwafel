@@ -10,7 +10,7 @@ from [KEX](https://github.com/serefayar/kex).
 Like a stroopwafel: two layers with something sealed between them — signed
 blocks wrapping authorized data.
 
-**Current version**: v0.6.0 (Phase 3e — Third-party blocks)
+**Current version**: v0.7.0 (Babashka compatibility)
 
 ## Goals
 
@@ -84,7 +84,7 @@ CEDN 1.2.0 adds native byte array support via `#bytes "hex"` tagged literal,
 which was specifically requested for stroopwafel's signing pipeline (SHA-256
 hashes and Ed25519 signatures are byte arrays).
 
-## Current Architecture (v0.6.0)
+## Current Architecture (v0.7.0)
 
 ```
 stroopwafel/
@@ -105,7 +105,7 @@ stroopwafel/
 │   └── stroopwafel/
 │       ├── core.clj            ← public API: new-keypair, issue, attenuate, seal, verify, evaluate, revocation-ids, graph, third-party-request, create-third-party-block, append-third-party
 │       ├── block.clj           ← block chain signing and verification
-│       ├── crypto.clj          ← Ed25519, SHA-256, key encode/decode, CEDN canonical-bytes
+│       ├── crypto.clj          ← Ed25519, SHA-256, key encode/decode, key predicates, CEDN canonical-bytes
 │       ├── datalog.clj         ← Datalog engine with fact store, scoping, origin tracking, expressions
 │       └── graph.clj           ← explain tree → graph visualization
 └── test/
@@ -332,9 +332,9 @@ facts are invisible to the authorizer (backward compatible).
 | Canonical serialization | Protobuf | ✓ CEDN | Different wire format |
 | Proof visualization | No | ✓ | Stroopwafel-only feature |
 | Third-party blocks | Yes | ✓ | — |
-| Cross-platform | Multi-lang | JVM only | Phase 4 (bb ready) |
+| Cross-platform | Multi-lang | ✓ JVM + Babashka | CLJS remains Phase 4 |
 
-## Current Work Direction (as of v0.6.0)
+## Current Work Direction (as of v0.7.0)
 
 With Biscuit feature parity achieved, the focus has shifted to:
 
@@ -445,10 +445,16 @@ With Biscuit feature parity achieved, the focus has shifted to:
 - ✓ Scope: authorizer sees trusted third-party facts; first-party blocks do not
 - ✓ 12 new tests (6 datalog scope + 6 e2e)
 
-### Phase 4: Multi-platform
-- .cljc throughout (JVM + Babashka + potentially CLJS)
-- Cross-platform crypto (JCA on JVM, Web Crypto API on JS)
-- Babashka already confirmed working (full JDK crypto in bb v1.12.215)
+### Phase 4a: Babashka Compatibility ✓ (v0.7.0)
+- ✓ Removed `java.security.PrivateKey`/`PublicKey` type hints (not in bb's class allowlist)
+- ✓ Added `ed25519-private-key?` and `ed25519-public-key?` predicates (work on JVM + bb)
+- ✓ All 88 tests pass on both JVM (Clojure 1.12.4) and Babashka (v1.12.217)
+- ✓ No .cljc conversion needed — bb loads .clj files directly
+- ✓ Full JDK crypto (Ed25519, SHA-256, X.509) available in bb via GraalVM
+
+### Phase 4b: ClojureScript
+- .cljc throughout (potentially CLJS/nbb)
+- Cross-platform crypto abstraction (JCA on JVM/bb, Web Crypto API on JS)
 
 ## License
 

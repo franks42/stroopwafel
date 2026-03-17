@@ -71,7 +71,7 @@
 
    The signing algorithm must match the verification algorithm
    used in `verify`."
-  [^java.security.PrivateKey priv ^bytes data]
+  [priv ^bytes data]
   (let [sig (Signature/getInstance "Ed25519")]
     (.initSign sig priv)
     (.update sig data)
@@ -92,18 +92,28 @@
 
    If verification fails, the token must be rejected before any logical
    evaluation occurs."
-  [^java.security.PublicKey pub ^bytes data ^bytes signature]
+  [pub ^bytes data ^bytes signature]
   (let [sig (Signature/getInstance "Ed25519")]
     (.initVerify sig pub)
     (.update sig data)
     (.verify sig signature)))
+
+(defn ed25519-private-key?
+  "Returns true if k is an Ed25519 private key."
+  [k]
+  (and (some? k) (= "EdDSA" (.getAlgorithm k)) (= "PKCS#8" (.getFormat k))))
+
+(defn ed25519-public-key?
+  "Returns true if k is an Ed25519 public key."
+  [k]
+  (and (some? k) (= "EdDSA" (.getAlgorithm k)) (= "X.509" (.getFormat k))))
 
 (defn encode-public-key
   "Encodes a public key as an X.509 byte array.
 
    This is the standard encoding for storing public keys in
    block payloads, where CEDN serializes them as `#bytes`."
-  [^java.security.PublicKey pub]
+  [pub]
   (.getEncoded pub))
 
 (defn decode-public-key

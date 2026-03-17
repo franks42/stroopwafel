@@ -1,5 +1,6 @@
 (ns stroopwafel.core-test
   (:require [stroopwafel.core :as sut]
+            [stroopwafel.crypto :as crypto]
             [clojure.test :as t]))
 
 (t/deftest end-to-end-with-authorizer
@@ -221,7 +222,7 @@
                  {:facts [[:user "alice"]]}
                  {:private-key (:priv kp)})]
       (t/is (some? (:proof token)))
-      (t/is (instance? java.security.PrivateKey (:proof token))))))
+      (t/is (crypto/ed25519-private-key? (:proof token))))))
 
 (t/deftest sealed-token-verifies
   (t/testing "Sealed token passes verification"

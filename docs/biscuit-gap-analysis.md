@@ -27,7 +27,7 @@ background. This document tracks only the gap status.
 | Authorizer policies | Yes | ✓ Yes | Done (v0.3.0) |
 | Sealed tokens | Yes | ✓ Yes | Done (v0.4.0) |
 | Third-party blocks | Yes | ✓ Yes | Done (v0.6.0) |
-| Cross-platform | Multi-lang | JVM only | Open — bb ready, CLJS needs work |
+| Cross-platform | Multi-lang | JVM + Babashka | Done (v0.7.0) — CLJS remains open |
 
 ---
 
