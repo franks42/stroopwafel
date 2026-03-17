@@ -174,3 +174,163 @@
                                          [:request-amount ?amt]]
                                  :when  [(<= ?amt ?max)]}]})]
       (t/is (:valid? result)))))
+
+;; --- SDSI name binding: name→key mapping + name-based entitlements ---
+
+(defn- make-sdsi-authorizer
+  "Builds an authorizer with SDSI name bindings (group roster)
+   and the verified request key."
+  [verified-key named-keys]
+  {:facts (into [[:request-verified-agent-key verified-key]]
+                named-keys)
+   :rules '[{:id   :resolve-name
+             :head [:authenticated-as ?name]
+             :body [[:named-key ?name ?k]
+                    [:request-verified-agent-key ?k]]}]
+   :policies '[{:kind  :allow
+                :query [[:authenticated-as ?name]
+                        [:right ?name ?action ?resource]]}]})
+
+(t/deftest sdsi-name-binding-allows-group-member
+  (t/testing "Agent in named group is authorized via name→key binding"
+    (let [root-kp  (sw/new-keypair)
+          agent-a  (sw/new-keypair)
+          agent-b  (sw/new-keypair)
+          pk-a     (crypto/encode-public-key (:pub agent-a))
+          pk-b     (crypto/encode-public-key (:pub agent-b))
+
+          ;; Token grants entitlements to a name, not a key
+          token (sw/issue
+                 {:facts [[:right "ops-team" :read "/api/metrics"]
+                          [:right "ops-team" :restart "/api/service"]]}
+                 {:private-key (:priv root-kp)})
+
+          ;; Agent A signs request
+          signed (req/sign-request {:action :read} (:priv agent-a) (:pub agent-a))
+          verified-key (req/verify-request signed)
+
+          result (sw/evaluate token
+                   :authorizer (make-sdsi-authorizer verified-key
+                                 [[:named-key "ops-team" pk-a]
+                                  [:named-key "ops-team" pk-b]]))]
+      (t/is (:valid? result)))))
+
+(t/deftest sdsi-name-binding-rejects-non-member
+  (t/testing "Agent not in named group is rejected"
+    (let [root-kp   (sw/new-keypair)
+          member    (sw/new-keypair)
+          outsider  (sw/new-keypair)
+          pk-member (crypto/encode-public-key (:pub member))
+
+          token (sw/issue
+                 {:facts [[:right "ops-team" :read "/api/metrics"]]}
+                 {:private-key (:priv root-kp)})
+
+          ;; Outsider signs request
+          signed (req/sign-request {:action :read} (:priv outsider) (:pub outsider))
+          verified-key (req/verify-request signed)
+
+          result (sw/evaluate token
+                   :authorizer (make-sdsi-authorizer verified-key
+                                 [[:named-key "ops-team" pk-member]]))]
+      (t/is (not (:valid? result))))))
+
+(t/deftest sdsi-multiple-groups
+  (t/testing "Agent in one group gets only that group's entitlements"
+    (let [root-kp (sw/new-keypair)
+          alice   (sw/new-keypair)
+          bob     (sw/new-keypair)
+          pk-a    (crypto/encode-public-key (:pub alice))
+          pk-b    (crypto/encode-public-key (:pub bob))
+
+          ;; Token with entitlements for two groups
+          token (sw/issue
+                 {:facts [[:right "readers" :read "/api/data"]
+                          [:right "writers" :write "/api/data"]]}
+                 {:private-key (:priv root-kp)})
+
+          ;; Alice is a reader, Bob is a writer
+          signed-a (req/sign-request {:action :read} (:priv alice) (:pub alice))
+          verified-a (req/verify-request signed-a)
+
+          name-bindings [[:named-key "readers" pk-a]
+                         [:named-key "writers" pk-b]]
+
+          ;; Alice can read
+          result-a (sw/evaluate token
+                     :authorizer (make-sdsi-authorizer verified-a name-bindings))
+
+          ;; Bob signs
+          signed-b (req/sign-request {:action :write} (:priv bob) (:pub bob))
+          verified-b (req/verify-request signed-b)
+
+          ;; Bob can write
+          result-b (sw/evaluate token
+                     :authorizer (make-sdsi-authorizer verified-b name-bindings))]
+
+      ;; Both succeed — each resolves to their own group
+      (t/is (:valid? result-a))
+      (t/is (:valid? result-b)))))
+
+(t/deftest sdsi-name-binding-with-attenuation
+  (t/testing "Attenuated token restricts name-based entitlements"
+    (let [root-kp (sw/new-keypair)
+          agent   (sw/new-keypair)
+          pk      (crypto/encode-public-key (:pub agent))
+
+          ;; Broad token
+          token (sw/issue
+                 {:facts [[:right "ops-team" :read "/api/metrics"]
+                          [:right "ops-team" :restart "/api/service"]]}
+                 {:private-key (:priv root-kp)})
+
+          ;; Attenuate: read-only
+          restricted (sw/attenuate token
+                       {:checks '[{:id :read-only
+                                   :query [[:right ?name :read ?r]]}]})
+
+          signed (req/sign-request {:action :read} (:priv agent) (:pub agent))
+          verified-key (req/verify-request signed)
+
+          result (sw/evaluate restricted
+                   :authorizer (make-sdsi-authorizer verified-key
+                                 [[:named-key "ops-team" pk]]))]
+      (t/is (:valid? result)))))
+
+(t/deftest sdsi-name-binding-via-third-party-block
+  (t/testing "IdP attests group membership via third-party block"
+    (let [root-kp (sw/new-keypair)
+          idp-kp  (sw/new-keypair)
+          agent   (sw/new-keypair)
+          pk      (crypto/encode-public-key (:pub agent))
+
+          ;; Token with name-based entitlements
+          token (sw/issue
+                 {:facts [[:right "verified-users" :read "/api/data"]]}
+                 {:private-key (:priv root-kp)})
+
+          ;; IdP signs a third-party block attesting the name→key binding
+          tp-req (sw/third-party-request token)
+          tp-block (sw/create-third-party-block
+                     tp-req
+                     {:facts [[:named-key "verified-users" pk]]}
+                     {:private-key (:priv idp-kp) :public-key (:pub idp-kp)})
+          token2 (sw/append-third-party token tp-block)
+
+          ;; Agent signs request
+          signed (req/sign-request {:action :read} (:priv agent) (:pub agent))
+          verified-key (req/verify-request signed)
+
+          ;; Authorizer trusts IdP and evaluates
+          result (sw/evaluate token2
+                   :authorizer
+                   {:trusted-external-keys [(:pub idp-kp)]
+                    :facts [[:request-verified-agent-key verified-key]]
+                    :rules '[{:id   :resolve-name
+                              :head [:authenticated-as ?name]
+                              :body [[:named-key ?name ?k]
+                                     [:request-verified-agent-key ?k]]}]
+                    :policies '[{:kind  :allow
+                                 :query [[:authenticated-as ?name]
+                                         [:right ?name :read ?r]]}]})]
+      (t/is (:valid? result)))))

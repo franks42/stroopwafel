@@ -156,6 +156,89 @@ realized bearer is insufficient, and is now adding proof-of-possession back
 [GNAP](https://datatracker.ietf.org/doc/html/rfc9635) in 2024). Stroopwafel
 expresses SPKI's model as Datalog facts instead of certificate fields.
 
+## SDSI Name Binding (Groups)
+
+The examples above bind a token to one specific key (pure SPKI). SDSI adds
+the other half: **name→key mappings**. Instead of binding entitlements to a
+key, bind them to a *name* — then separately define which keys belong to
+that name.
+
+### One Token, Many Agents
+
+Issue a single token with entitlements for a named group:
+
+```clojure
+(def token
+  (sw/issue {:facts [[:right "ops-team" :read "/api/metrics"]
+                     [:right "ops-team" :restart "/api/service"]]}
+            {:private-key (:priv root-kp)}))
+```
+
+The token says nothing about specific keys. The authorizer maintains the
+group roster as name→key bindings:
+
+```clojure
+(sw/evaluate token
+  :authorizer
+  {:facts [[:request-verified-agent-key verified-key]
+           ;; SDSI name bindings — the group roster
+           [:named-key "ops-team" alice-pk-bytes]
+           [:named-key "ops-team" bob-pk-bytes]]
+   :rules '[{:id   :resolve-name
+             :head [:authenticated-as ?name]
+             :body [[:named-key ?name ?k]
+                    [:request-verified-agent-key ?k]]}]
+   :policies '[{:kind  :allow
+                :query [[:authenticated-as ?name]
+                        [:right ?name ?action ?resource]]}]})
+```
+
+The Datalog chain: `[:named-key ?name ?k]` binds the verified key to a name,
+then `[:right ?name ?action ?resource]` checks the name's entitlements.
+Adding or removing group members is just updating the authorizer's name
+bindings — no token reissuance needed.
+
+### Where Name Bindings Can Live
+
+| Source | How | Best for |
+|--------|-----|----------|
+| **Authorizer facts** | Execution service maintains the roster | Simple setups, internal services |
+| **Third-party blocks** | IdP signs `[:named-key "group" pk]` | Federated identity, cross-org |
+| **Authority block** | Issuer pre-registers keys at issuance | Static groups, air-gapped systems |
+
+Third-party blocks are the most powerful option — an external IdP can attest
+group membership without the authority or execution service knowing the
+member list in advance:
+
+```clojure
+;; IdP signs a third-party block with the name→key binding
+(def tp-block
+  (sw/create-third-party-block
+    (sw/third-party-request token)
+    {:facts [[:named-key "verified-users" agent-pk-bytes]]}
+    {:private-key (:priv idp-sk) :public-key (:pub idp-kp)}))
+
+(def token2 (sw/append-third-party token tp-block))
+
+;; Authorizer trusts the IdP
+(sw/evaluate token2
+  :authorizer {:trusted-external-keys [(:pub idp-kp)]
+               ...})
+```
+
+### SPKI + SDSI = Full Model
+
+| Layer | What it does | Stroopwafel expression |
+|-------|-------------|----------------------|
+| **SPKI** | Authorization bound to key | `[:authorized-agent-key pk]` + signed request |
+| **SDSI** | Name bound to key | `[:named-key "group" pk]` + signed request |
+| **Capability** | What the name/key can do | `[:right "group" :action "/resource"]` |
+| **Datalog join** | Chains it all together | Rules unify `?k` across name, request, and entitlement |
+
+This is the [SPKI/SDSI](https://datatracker.ietf.org/doc/html/rfc2693) model
+from 1996, expressed as Datalog facts. No new code was needed — the Datalog
+engine's join semantics and the signed request primitives compose naturally.
+
 ## Documentation
 
 - `context.md` — full architecture and design decisions
