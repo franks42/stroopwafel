@@ -10,7 +10,7 @@ from [KEX](https://github.com/serefayar/kex).
 Like a stroopwafel: two layers with something sealed between them — signed
 blocks wrapping authorized data.
 
-**Current version**: v0.7.0 (Babashka compatibility)
+**Current version**: v0.8.0 (Requester-bound tokens)
 
 ## Goals
 
@@ -84,7 +84,7 @@ CEDN 1.2.0 adds native byte array support via `#bytes "hex"` tagged literal,
 which was specifically requested for stroopwafel's signing pipeline (SHA-256
 hashes and Ed25519 signatures are byte arrays).
 
-## Current Architecture (v0.7.0)
+## Current Architecture (v0.8.0)
 
 ```
 stroopwafel/
@@ -106,17 +106,19 @@ stroopwafel/
 │       ├── core.clj            ← public API: new-keypair, issue, attenuate, seal, verify, evaluate, revocation-ids, graph, third-party-request, create-third-party-block, append-third-party
 │       ├── block.clj           ← block chain signing and verification
 │       ├── crypto.clj          ← Ed25519, SHA-256, key encode/decode, key predicates, CEDN canonical-bytes
-│       ├── datalog.clj         ← Datalog engine with fact store, scoping, origin tracking, expressions
-│       └── graph.clj           ← explain tree → graph visualization
+│       ├── datalog.clj         ← Datalog engine with fact store, scoping, origin tracking, expressions, byte-array-aware unification
+│       ├── graph.clj           ← explain tree → graph visualization
+│       └── request.clj         ← signed requests for requester-bound tokens (proof-of-possession)
 └── test/
     └── stroopwafel/
         ├── core_test.clj       ← 29 tests (e2e, revocation, policies, ephemeral, seal, expressions, third-party)
         ├── crypto_test.clj     ← 15 tests (crypto, key encode/decode, ephemeral chain)
         ├── datalog_test.clj    ← 39 tests (10 original + 9 scoping + 14 expressions + 6 third-party scope)
-        └── graph_test.clj      ← 5 tests
+        ├── graph_test.clj      ← 5 tests
+        └── request_test.clj    ← 8 tests (sign/verify round-trip, tampered, wrong-key, Datalog join integration)
 ```
 
-88 tests, 172 assertions. clj-kondo clean, cljfmt clean.
+96 tests, 183 assertions. clj-kondo clean, cljfmt clean.
 
 ## Dependencies
 
@@ -316,7 +318,7 @@ facts are invisible to the authorizer (backward compatible).
 
 ## Biscuit Parity Status
 
-| Feature | Biscuit | Stroopwafel v0.6.0 | Gap |
+| Feature | Biscuit | Stroopwafel v0.8.0 | Gap |
 |---------|---------|-------------------|-----|
 | Ed25519 signatures | Yes | ✓ | — |
 | Block chain | Yes | ✓ | — |
@@ -332,9 +334,10 @@ facts are invisible to the authorizer (backward compatible).
 | Canonical serialization | Protobuf | ✓ CEDN | Different wire format |
 | Proof visualization | No | ✓ | Stroopwafel-only feature |
 | Third-party blocks | Yes | ✓ | — |
+| Requester-bound tokens | No (bearer only) | ✓ | Stroopwafel-only — SPKI model |
 | Cross-platform | Multi-lang | ✓ JVM + Babashka | CLJS remains Phase 4 |
 
-## Current Work Direction (as of v0.7.0)
+## Current Work Direction (as of v0.8.0)
 
 With Biscuit feature parity achieved, the focus has shifted to:
 
@@ -452,7 +455,17 @@ With Biscuit feature parity achieved, the focus has shifted to:
 - ✓ No .cljc conversion needed — bb loads .clj files directly
 - ✓ Full JDK crypto (Ed25519, SHA-256, X.509) available in bb via GraalVM
 
-### Phase 4b: ClojureScript
+### Phase 5: Requester-Bound Tokens ✓ (v0.8.0)
+- ✓ `stroopwafel.request/sign-request` — agent signs request body with Ed25519
+- ✓ `stroopwafel.request/verify-request` — verify signature, return agent-key bytes
+- ✓ Datalog join pattern: `[:authorized-agent-key ?k]` ∧ `[:request-verified-agent-key ?k]`
+- ✓ Fixed `eval-body` env threading bug — patterns now share bindings through unification
+- ✓ Added `value=` for byte-array-aware equality in Datalog `bind` and `unify*`
+- ✓ 8 new tests (4 sign/verify + 4 integration with Datalog join)
+- ✓ 96 tests, 183 assertions pass on both JVM and Babashka
+- ✓ README.md rewritten with full feature overview and requester-bound explanation
+
+### Phase 6: ClojureScript
 - .cljc throughout (potentially CLJS/nbb)
 - Cross-platform crypto abstraction (JCA on JVM/bb, Web Crypto API on JS)
 

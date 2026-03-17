@@ -11,18 +11,29 @@
   (and (symbol? var)
        (str/starts-with? (name var) "?")))
 
+(defn value=
+  "Value equality that handles byte arrays.
+
+   Clojure's = compares byte arrays by identity, not content.
+   This function uses java.util.Arrays/equals for byte arrays
+   and falls back to = for everything else."
+  [a b]
+  (if (and (bytes? a) (bytes? b))
+    (java.util.Arrays/equals ^bytes a ^bytes b)
+    (= a b)))
+
 (defn bind
   "Attempts to bind a logic variable to a concrete value.
 
    If the variable is unbound, associates it with the given value.
    If the variable is already bound, ensures the existing binding
-   matches the value.
+   matches the value (using value= for byte-array-aware comparison).
 
    Returns the updated environment map if successful,
    or nil if the binding would cause a conflict."
   [env var value]
   (if-let [existing (get env var)]
-    (when (= existing value) env)
+    (when (value= existing value) env)
     (assoc env var value)))
 
 ;;; ---- Fact store with origin tracking ----
@@ -109,7 +120,7 @@
                     {:env   new-env
                      :proof proof})
 
-                  (= pt ft)
+                  (value= pt ft)
                   state
 
                   :else nil))))
@@ -134,7 +145,9 @@
   ([pattern fact]
    (unify pattern fact #{0}))
   ([pattern fact fact-origin]
-   (when-let [result (unify* {:env {} :proof []} pattern fact)]
+   (unify pattern fact fact-origin {}))
+  ([pattern fact fact-origin env]
+   (when-let [result (unify* {:env env :proof []} pattern fact)]
      (-> result
          (update :proof conj
                  {:type   :fact
@@ -169,13 +182,12 @@
      (fn [states pattern]
        (for [state states
              [fact-origin fact] origin-facts
-             :let  [result (unify pattern fact fact-origin)]
+             :let  [result (unify pattern fact fact-origin (:env state))]
              :when result
-             :let  [merged-env    (merge (:env state) (:env result))
-                    merged-proof  (into (:proof state) (:proof result))
+             :let  [merged-proof  (into (:proof state) (:proof result))
                     merged-origin (set/union (or (:origin state) #{})
                                              (:origin result))]]
-         {:env    merged-env
+         {:env    (:env result)
           :proof  merged-proof
           :origin merged-origin}))
      [{:env {} :proof [] :origin #{}}]
