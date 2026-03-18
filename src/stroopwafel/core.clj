@@ -246,20 +246,35 @@
          (mapv #(select-keys % [:facts :rules :checks])
                (:blocks token))}
 
-        ;; Compute trusted third-party block indices
-        trusted-block-indices
-        (when-let [trusted-keys (:trusted-external-keys authorizer)]
-          (let [trusted-encoded (mapv crypto/encode-public-key trusted-keys)]
-            (into #{}
-                  (keep-indexed
-                   (fn [idx block]
-                     (when-let [ext-key (:external-key block)]
-                       (when (some #(crypto/bytes= ext-key %) trusted-encoded)
-                         idx))))
-                  (:blocks token))))]
+        ;; Compute trusted third-party block indices and signer attribution
+        trusted-keys (:trusted-external-keys authorizer)
+        trusted-encoded (when trusted-keys
+                          (mapv crypto/encode-public-key trusted-keys))
+        trusted-info
+        (when trusted-encoded
+          (keep-indexed
+           (fn [idx block]
+             (when-let [ext-key (:external-key block)]
+               (when (some #(crypto/bytes= ext-key %) trusted-encoded)
+                 {:idx idx :external-key ext-key})))
+           (:blocks token)))
+
+        trusted-block-indices (when trusted-info
+                                (into #{} (map :idx) trusted-info))
+
+        ;; Auto-inject [:block-signed-by <block-idx> <external-key-bytes>]
+        ;; for each trusted third-party block — enables Datalog delegation chains
+        signer-facts (mapv (fn [{:keys [idx external-key]}]
+                             [:block-signed-by idx external-key])
+                           trusted-info)
+
+        authorizer-with-signers
+        (update (dissoc authorizer :trusted-external-keys)
+                :facts into signer-facts)]
+
     (datalog/eval-token core-token
                         :explain? explain?
-                        :authorizer (dissoc authorizer :trusted-external-keys)
+                        :authorizer authorizer-with-signers
                         :trusted-block-indices trusted-block-indices)))
 
 (defn revocation-ids

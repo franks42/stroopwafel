@@ -479,3 +479,75 @@
                                  {:checks [{:id    :c1
                                             :query [[:role "alice" :admin]]}]})]
       (t/is (false? (:valid? result))))))
+
+;; --- Fixpoint safety: circular rules, explosion, termination ---
+
+(t/deftest circular-rules-terminate
+  (t/testing "Mutually recursive rules reach fixpoint without looping"
+    (let [token {:blocks [{:facts [[:a 1]]
+                           :rules [{:id :a-to-b :head [:b '?x] :body [[:a '?x]]}
+                                   {:id :b-to-a :head [:a '?x] :body [[:b '?x]]}]
+                           :checks []}]}
+          result (sut/eval-token token
+                                 :authorizer
+                                 {:policies [{:kind :allow
+                                              :query [[:b 1]]}]})]
+      (t/is (:valid? result)))))
+
+(t/deftest circular-rules-no-bootstrap
+  (t/testing "Circular rules with no seed facts produce nothing"
+    (let [token {:blocks [{:facts []
+                           :rules [{:id :a-to-b :head [:b '?x] :body [[:a '?x]]}
+                                   {:id :b-to-a :head [:a '?x] :body [[:b '?x]]}]
+                           :checks []}]}
+          result (sut/eval-token token
+                                 :authorizer
+                                 {:policies [{:kind :allow
+                                              :query [[:b 1]]}]})]
+      (t/is (not (:valid? result))))))
+
+(t/deftest fact-explosion-capped
+  (t/testing "Unbounded rule generation stops at max-facts limit"
+    (let [token {:blocks [{:facts [[:n 1]]
+                           :rules '[{:id   :grow
+                                     :head [:n ?next]
+                                     :body [[:n ?x]]
+                                     :let  [[?next (+ ?x 1)]]
+                                     :when [(< ?x 2000)]}]
+                           :checks []}]}
+          result-low (sut/eval-token token
+                                     :authorizer
+                                     {:policies [{:kind :allow
+                                                  :query [[:n 100]]}]})
+          result-high (sut/eval-token token
+                                      :authorizer
+                                      {:policies [{:kind :allow
+                                                   :query [[:n 1500]]}]})]
+      (t/is (:valid? result-low))
+      (t/is (not (:valid? result-high))))))
+
+(t/deftest self-referential-rule-terminates
+  (t/testing "Rule that derives its own input terminates after one round"
+    (let [token {:blocks [{:facts [[:x 1]]
+                           :rules [{:id :self :head [:x '?v] :body [[:x '?v]]}]
+                           :checks []}]}
+          result (sut/eval-token token
+                                 :authorizer
+                                 {:policies [{:kind :allow
+                                              :query [[:x 1]]}]})]
+      (t/is (:valid? result)))))
+
+(t/deftest transitive-chain-terminates
+  (t/testing "Long transitive chain reaches fixpoint"
+    (let [edges (mapv (fn [i] [:edge i (inc i)]) (range 1 10))
+          token {:blocks [{:facts (into [[:reachable 1 1]] edges)
+                           :rules [{:id   :trans
+                                    :head [:reachable '?a '?c]
+                                    :body [[:reachable '?a '?b]
+                                           [:edge '?b '?c]]}]
+                           :checks []}]}
+          result (sut/eval-token token
+                                 :authorizer
+                                 {:policies [{:kind :allow
+                                              :query [[:reachable 1 10]]}]})]
+      (t/is (:valid? result)))))
