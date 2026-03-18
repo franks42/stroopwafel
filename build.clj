@@ -10,7 +10,7 @@
             [deps-deploy.deps-deploy :as dd]))
 
 (def lib 'com.github.franks42/stroopwafel)
-(def version "0.8.0")
+(def version "0.9.0")
 (def class-dir "target/classes")
 (def jar-file "target/stroopwafel.jar")
 (def basis (delay (b/create-basis {:project "deps.edn" :root nil})))

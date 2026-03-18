@@ -10,7 +10,7 @@ from [KEX](https://github.com/serefayar/kex).
 Like a stroopwafel: two layers with something sealed between them — signed
 blocks wrapping authorized data.
 
-**Current version**: v0.8.0 (Requester-bound tokens)
+**Current version**: v0.9.0 (Multi-token authorization context)
 
 ## Goals
 
@@ -84,7 +84,7 @@ CEDN 1.2.0 adds native byte array support via `#bytes "hex"` tagged literal,
 which was specifically requested for stroopwafel's signing pipeline (SHA-256
 hashes and Ed25519 signatures are byte arrays).
 
-## Current Architecture (v0.8.0)
+## Current Architecture (v0.9.0)
 
 ```
 stroopwafel/
@@ -103,6 +103,7 @@ stroopwafel/
 │   └── spki-sdsi-vs-biscuit-gpt.md   ← GPT's take on SPKI vs Biscuit
 ├── src/
 │   └── stroopwafel/
+│       ├── authorize.clj       ← multi-token authorization context (PDP/PEP separation)
 │       ├── core.clj            ← public API: new-keypair, issue, attenuate, seal, verify, evaluate, revocation-ids, graph, third-party-request, create-third-party-block, append-third-party
 │       ├── block.clj           ← block chain signing and verification
 │       ├── crypto.clj          ← Ed25519, SHA-256, key encode/decode, key predicates, CEDN canonical-bytes
@@ -111,14 +112,15 @@ stroopwafel/
 │       └── request.clj         ← signed requests for requester-bound tokens (proof-of-possession)
 └── test/
     └── stroopwafel/
+        ├── authorize_test.clj  ← 10 tests (multi-token, signed request, three-authority composition)
         ├── core_test.clj       ← 29 tests (e2e, revocation, policies, ephemeral, seal, expressions, third-party)
         ├── crypto_test.clj     ← 15 tests (crypto, key encode/decode, ephemeral chain)
-        ├── datalog_test.clj    ← 39 tests (10 original + 9 scoping + 14 expressions + 6 third-party scope)
+        ├── datalog_test.clj    ← 44 tests (10 original + 9 scoping + 14 expressions + 6 third-party scope + 5 fixpoint safety)
         ├── graph_test.clj      ← 5 tests
-        └── request_test.clj    ← 8 tests (sign/verify round-trip, tampered, wrong-key, Datalog join integration)
+        └── request_test.clj    ← 17 tests (sign/verify, SDSI name binding, delegation chains, circular safety)
 ```
 
-96 tests, 183 assertions. clj-kondo clean, cljfmt clean.
+120 tests, 213 assertions. clj-kondo clean, cljfmt clean.
 
 ## Dependencies
 
@@ -318,7 +320,7 @@ facts are invisible to the authorizer (backward compatible).
 
 ## Biscuit Parity Status
 
-| Feature | Biscuit | Stroopwafel v0.8.0 | Gap |
+| Feature | Biscuit | Stroopwafel v0.9.0 | Gap |
 |---------|---------|-------------------|-----|
 | Ed25519 signatures | Yes | ✓ | — |
 | Block chain | Yes | ✓ | — |
@@ -335,9 +337,12 @@ facts are invisible to the authorizer (backward compatible).
 | Proof visualization | No | ✓ | Stroopwafel-only feature |
 | Third-party blocks | Yes | ✓ | — |
 | Requester-bound tokens | No (bearer only) | ✓ | Stroopwafel-only — SPKI model |
+| SDSI name binding | No | ✓ | Stroopwafel-only — Datalog patterns |
+| Delegation chains | No | ✓ | Stroopwafel-only — signer attribution |
+| Multi-token composition | No | ✓ | Stroopwafel-only — PDP/PEP separation |
 | Cross-platform | Multi-lang | ✓ JVM + Babashka | CLJS remains Phase 4 |
 
-## Current Work Direction (as of v0.8.0)
+## Current Work Direction (as of v0.9.0)
 
 With Biscuit feature parity achieved, the focus has shifted to:
 
@@ -465,7 +470,18 @@ With Biscuit feature parity achieved, the focus has shifted to:
 - ✓ 96 tests, 183 assertions pass on both JVM and Babashka
 - ✓ README.md rewritten with full feature overview and requester-bound explanation
 
-### Phase 6: ClojureScript
+### Phase 6: Multi-Token Authorization ✓ (v0.9.0)
+- ✓ `stroopwafel.authorize` namespace — PDP/PEP separation
+- ✓ `context` → `add-token` → `add-signed-request` → `add-facts` → `authorize`
+- ✓ Multiple tokens from independent authorities composed in one evaluation
+- ✓ Auto-inject `[:block-signed-by idx key]` for trusted third-party blocks
+- ✓ SDSI name binding patterns (groups) — no new code, Datalog joins
+- ✓ Delegation chains — root delegates naming power, indirect trust via meta-groups
+- ✓ Fixpoint safety tests — circular rules, explosion cap, transitive closure
+- ✓ 120 tests, 213 assertions on JVM + Babashka
+- ✓ Seamless upgrade path: bearer → SPKI → SDSI → multi-token
+
+### Phase 7: ClojureScript
 - .cljc throughout (potentially CLJS/nbb)
 - Cross-platform crypto abstraction (JCA on JVM/bb, Web Crypto API on JS)
 
