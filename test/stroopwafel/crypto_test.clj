@@ -179,3 +179,10 @@
       (t/is (false?
              (block/verify-chain
               [(:block r0) (:block r1-forged)] pub))))))
+
+(t/deftest hex-round-trip
+  (let [original (byte-array [0 1 127 -128 -1 42])
+        hex      (sut/bytes->hex original)
+        back     (sut/hex->bytes hex)]
+    (t/is (= (seq original) (seq back)))
+    (t/is (= "00017f80ff2a" hex))))
