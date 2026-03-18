@@ -63,7 +63,7 @@ Clojure + [CEDN](https://github.com/franks42/canonical-edn) (deterministic EDN s
 
 ```clojure
 ;; deps.edn
-{:deps {com.github.franks42/stroopwafel {:mvn/version "0.7.0"}
+{:deps {com.github.franks42/stroopwafel {:mvn/version "0.9.0"}
         com.github.franks42/cedn {:mvn/version "1.2.0"}}}
 ```
 

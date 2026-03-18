@@ -1,7 +1,7 @@
-# Biscuit Gap Analysis — Stroopwafel v0.6.0
+# Biscuit Gap Analysis — Stroopwafel v0.9.0
 
 Current status of Stroopwafel against the Biscuit specification (v3.3).
-Updated Feb 2026 after third-party blocks completion.
+Updated Mar 2026 — beyond Biscuit parity with SPKI/SDSI features.
 
 See `biscuit-kex-analysis.md` for the original KEX research and Biscuit
 background. This document tracks only the gap status.
@@ -28,6 +28,11 @@ background. This document tracks only the gap status.
 | Sealed tokens | Yes | ✓ Yes | Done (v0.4.0) |
 | Third-party blocks | Yes | ✓ Yes | Done (v0.6.0) |
 | Cross-platform | Multi-lang | JVM + Babashka | Done (v0.7.0) — CLJS remains open |
+| **Beyond Biscuit** | | | |
+| Requester-bound tokens | No (bearer only) | ✓ Yes | Done (v0.8.0) — SPKI key binding |
+| SDSI name binding | No | ✓ Yes | Done (v0.8.0) — Datalog patterns |
+| Delegation chains | No | ✓ Yes | Done (v0.9.0) — signer attribution |
+| Multi-token composition | No | ✓ Yes | Done (v0.9.0) — PDP/PEP separation |
 
 ---
 
