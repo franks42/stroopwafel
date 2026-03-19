@@ -1,11 +1,14 @@
 (ns stroopwafel.envelope
-  "Generic signed envelope — sign and verify any EDN message.
+  "Generic signed envelope — sign and verify any canonicalizable EDN message.
 
-   The envelope handles cryptographic signing, verification, timestamps,
-   and expiry. It does NOT handle trust, replay, audience, or policy —
-   those belong to the enforcement layer above.
+   The envelope provides authentication (who signed) and integrity (what
+   was signed) at a point in time (signer-asserted timestamp). It does NOT
+   handle trust, replay, audience, or policy — those belong to the
+   enforcement layer above.
 
-   See alpaca-clj docs/stroopwafel-envelope-spec.md for the full spec."
+   Signed envelopes are self-describing via :type :stroopwafel/signed-envelope
+   and are themselves canonicalizable, enabling nested signing (turtles all
+   the way down) for multi-signature scenarios."
   (:require [stroopwafel.crypto :as crypto]
             [cedn.core :as cedn]
             [com.github.franks42.uuidv7.core :as uuidv7]
@@ -15,13 +18,14 @@
   "Sign a message with the signer's private key.
 
    Arguments:
-     message     — any CEDN-serializable EDN value (opaque to envelope)
+     message     — any canonicalizable EDN value (opaque to envelope)
      private-key — Ed25519 private key
      public-key  — Ed25519 public key
      ttl-seconds — how long the envelope is valid (default 120)
 
    Returns:
-     {:envelope  {:message <message> :signer-key <pk-bytes>
+     {:type      :stroopwafel/signed-envelope
+      :envelope  {:message <message> :signer-key <pk-bytes>
                   :request-id <UUIDv7-string> :expires <epoch-ms>}
       :signature <bytes>}"
   ([message private-key public-key]
@@ -37,14 +41,21 @@
                      :expires    expires}
          sig-bytes  (-> inner crypto/encode-block crypto/sha256
                         (->> (crypto/sign private-key)))]
-     {:envelope  inner
+     {:type      :stroopwafel/signed-envelope
+      :envelope  inner
       :signature sig-bytes})))
+
+(defn signed-envelope?
+  "Returns true if x is a signed envelope (has :type :stroopwafel/signed-envelope)."
+  [x]
+  (= :stroopwafel/signed-envelope (:type x)))
 
 (defn verify
   "Verify a signed envelope.
 
    Arguments:
-     outer — {:envelope <inner-map> :signature <bytes>}
+     outer — {:type :stroopwafel/signed-envelope
+              :envelope <inner-map> :signature <bytes>}
 
    Returns:
      {:valid?          true/false

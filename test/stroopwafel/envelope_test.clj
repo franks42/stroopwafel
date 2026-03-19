@@ -20,6 +20,8 @@
 
 (deftest sign-produces-correct-structure
   (let [outer (envelope/sign {:action :test} (:priv kp) (:pub kp))]
+    (is (= :stroopwafel/signed-envelope (:type outer)))
+    (is (envelope/signed-envelope? outer))
     (is (map? (:envelope outer)))
     (is (some? (:signature outer)))
     (let [inner (:envelope outer)]
@@ -164,3 +166,46 @@
         o2 (envelope/sign {:a 1} (:priv kp) (:pub kp))]
     (is (not= (get-in o1 [:envelope :request-id])
               (get-in o2 [:envelope :request-id])))))
+
+;; ---------------------------------------------------------------------------
+;; Type predicate
+;; ---------------------------------------------------------------------------
+
+(deftest signed-envelope-predicate
+  (is (envelope/signed-envelope? (envelope/sign {:x 1} (:priv kp) (:pub kp))))
+  (is (not (envelope/signed-envelope? {:just "a map"})))
+  (is (not (envelope/signed-envelope? nil))))
+
+;; ---------------------------------------------------------------------------
+;; Nested signing (turtles all the way down)
+;; ---------------------------------------------------------------------------
+
+(deftest nested-signing
+  (testing "A signed envelope can be the message of another signed envelope"
+    (let [;; Signer A signs the original message
+          inner-outer (envelope/sign {:intent "buy AAPL"} (:priv kp) (:pub kp))
+          ;; Signer B signs A's complete signed envelope
+          outer-outer (envelope/sign inner-outer (:priv kp2) (:pub kp2))
+          ;; Verify B's layer
+          b-result    (envelope/verify outer-outer)]
+      (is (:valid? b-result))
+      (is (envelope/signed-envelope? (:message b-result))
+          "B's message is itself a signed envelope")
+      ;; Verify A's layer (unwrapped from B)
+      (let [a-result (envelope/verify (:message b-result))]
+        (is (:valid? a-result))
+        (is (= {:intent "buy AAPL"} (:message a-result))
+            "A's message is the original payload")
+        (is (not (envelope/signed-envelope? (:message a-result)))
+            "The real payload is not a signed envelope"))))
+
+  (testing "Nested envelope survives serialization round-trip"
+    (let [inner (envelope/sign {:data 42} (:priv kp) (:pub kp))
+          outer (envelope/sign inner (:priv kp2) (:pub kp2))
+          s     (envelope/serialize outer)
+          back  (envelope/deserialize s)
+          b-res (envelope/verify back)
+          a-res (envelope/verify (:message b-res))]
+      (is (:valid? b-res))
+      (is (:valid? a-res))
+      (is (= {:data 42} (:message a-res))))))
