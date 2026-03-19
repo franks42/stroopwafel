@@ -137,6 +137,16 @@
   (byte-array (map #(unchecked-byte (Integer/parseInt (apply str %) 16))
                    (partition 2 hex))))
 
+(defn export-public-key-hex
+  "Encode a public key to hex string (X.509 bytes → hex)."
+  [pub-key]
+  (bytes->hex (encode-public-key pub-key)))
+
+(defn import-public-key-hex
+  "Decode a public key from hex string (hex → X.509 bytes → PublicKey)."
+  [hex-str]
+  (decode-public-key (hex->bytes hex-str)))
+
 (defn encode-block
   "Encodes a block payload into a canonical byte representation
    using CEDN (Canonical EDN).

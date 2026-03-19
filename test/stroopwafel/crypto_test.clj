@@ -186,3 +186,14 @@
         back     (sut/hex->bytes hex)]
     (t/is (= (seq original) (seq back)))
     (t/is (= "00017f80ff2a" hex))))
+
+(t/deftest public-key-hex-round-trip
+  (t/testing "generate keypair → export hex → import hex → keys match"
+    (let [kp      (sut/generate-keypair "Ed25519")
+          pub     (.getPublic kp)
+          hex     (sut/export-public-key-hex pub)
+          decoded (sut/import-public-key-hex hex)]
+      (t/is (string? hex))
+      (t/is (sut/bytes=
+             (sut/encode-public-key pub)
+             (sut/encode-public-key decoded))))))
