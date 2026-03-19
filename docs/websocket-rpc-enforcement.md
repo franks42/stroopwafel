@@ -308,4 +308,5 @@ never changes — only the token contents evolve.
 
 *Document status: design reference.*
 *Last updated: March 2026.*
-*Related: `docs/dual-pep-client-server-enforcement.md`*
+*Related: `docs/datalog-as-authorization-join.md`,
+`docs/dual-pep-client-server-enforcement.md` (in alpaca-clj)*

@@ -10,7 +10,7 @@ from [KEX](https://github.com/serefayar/kex).
 Like a stroopwafel: two layers with something sealed between them — signed
 blocks wrapping authorized data.
 
-**Current version**: v0.9.0 (Multi-token authorization context)
+**Current version**: v0.10.0 (Applied authorization: envelope, PEP, replay, trust)
 
 ## Goals
 
@@ -84,7 +84,7 @@ CEDN 1.2.0 adds native byte array support via `#bytes "hex"` tagged literal,
 which was specifically requested for stroopwafel's signing pipeline (SHA-256
 hashes and Ed25519 signatures are byte arrays).
 
-## Current Architecture (v0.9.0)
+## Current Architecture (v0.10.0)
 
 ```
 stroopwafel/
@@ -100,38 +100,51 @@ stroopwafel/
 │   ├── spki-sdsi-vs-biscuit.md ← SPKI/SDSI vs Biscuit comparison (external contribution)
 │   ├── spki-sdsi-vs-biscuit-concerns.md ← review concerns on the above
 │   ├── spki-sdsi-vs-biscuit-gemini.md ← Gemini's take on SPKI vs Biscuit
-│   └── spki-sdsi-vs-biscuit-gpt.md   ← GPT's take on SPKI vs Biscuit
+│   ├── spki-sdsi-vs-biscuit-gpt.md   ← GPT's take on SPKI vs Biscuit
+│   ├── datalog-as-authorization-join.md ← Datalog joins as SPKI 5-tuple reduction
+│   └── websocket-rpc-enforcement.md ← capability-gated RPC over websocket
 ├── src/
 │   └── stroopwafel/
 │       ├── authorize.clj       ← multi-token authorization context (PDP/PEP separation)
 │       ├── core.clj            ← public API: new-keypair, issue, attenuate, seal, verify, evaluate, revocation-ids, graph, third-party-request, create-third-party-block, append-third-party
 │       ├── block.clj           ← block chain signing and verification
-│       ├── crypto.clj          ← Ed25519, SHA-256, key encode/decode, key predicates, CEDN canonical-bytes
+│       ├── crypto.clj          ← Ed25519, SHA-256, key encode/decode, hex utilities, CEDN canonical-bytes
 │       ├── datalog.clj         ← Datalog engine with fact store, scoping, origin tracking, expressions, byte-array-aware unification
+│       ├── envelope.clj        ← generic signed envelopes (sign/verify, UUIDv7 request-id, expiry, quorum)
 │       ├── graph.clj           ← explain tree → graph visualization
-│       └── request.clj         ← signed requests for requester-bound tokens (proof-of-possession)
+│       ├── pep.clj             ← Policy Enforcement Point pipeline (canonicalize → extract → authorize)
+│       ├── replay.clj          ← replay protection (UUIDv7 freshness + nonce cache, factory pattern)
+│       ├── request.clj         ← signed requests for requester-bound tokens (proof-of-possession)
+│       ├── ssh.clj             ← SSH Ed25519 key import (OpenSSH format → Java key objects)
+│       └── trust.clj           ← trust-root fact generation for Datalog evaluation
 └── test/
     └── stroopwafel/
         ├── authorize_test.clj  ← 10 tests (multi-token, signed request, three-authority composition)
         ├── core_test.clj       ← 29 tests (e2e, revocation, policies, ephemeral, seal, expressions, third-party)
-        ├── crypto_test.clj     ← 15 tests (crypto, key encode/decode, ephemeral chain)
+        ├── crypto_test.clj     ← 16 tests (crypto, key encode/decode, ephemeral chain, hex round-trip)
         ├── datalog_test.clj    ← 44 tests (10 original + 9 scoping + 14 expressions + 6 third-party scope + 5 fixpoint safety)
+        ├── envelope_test.clj   ← 15 tests (sign/verify, expiry, quorum digest)
         ├── graph_test.clj      ← 5 tests
-        └── request_test.clj    ← 17 tests (sign/verify, SDSI name binding, delegation chains, circular safety)
+        ├── pep_test.clj        ← 7 tests (pipeline, exemption, allow/deny)
+        ├── replay_test.clj     ← 7 tests (freshness, replay, eviction, invalid IDs)
+        ├── request_test.clj    ← 17 tests (sign/verify, SDSI name binding, delegation chains, circular safety)
+        ├── ssh_test.clj        ← 5 tests (SSH key import round-trip)
+        └── trust_test.clj      ← 5 tests (single key, scoped map, nil)
 ```
 
-120 tests, 213 assertions. clj-kondo clean, cljfmt clean.
+160 tests, 307 assertions. clj-kondo clean, cljfmt clean.
 
 ## Dependencies
 
 ```clojure
 {:paths ["src" "resources"]
  :deps {org.clojure/clojure {:mvn/version "1.12.4"}
-        com.github.franks42/cedn {:mvn/version "1.2.0"}}}
+        com.github.franks42/cedn {:mvn/version "1.2.0"}
+        com.github.franks42/uuidv7 {:mvn/version "0.5.0"}}}
 ```
 
-Production deps: Clojure + CEDN only.
-CEDN itself has zero transitive deps.
+Production deps: Clojure + CEDN + UUIDv7.
+CEDN and UUIDv7 have zero transitive deps.
 
 ## Key Design Decisions
 
@@ -342,43 +355,40 @@ facts are invisible to the authorizer (backward compatible).
 | Multi-token composition | No | ✓ | Stroopwafel-only — PDP/PEP separation |
 | Cross-platform | Multi-lang | ✓ JVM + Babashka | CLJS remains Phase 4 |
 
-## Current Work Direction (as of v0.9.0)
+## Current Work Direction (as of v0.10.0)
 
-With Biscuit feature parity achieved, the focus has shifted to:
+With Biscuit feature parity achieved and applied authorization modules complete,
+the focus is on real-world deployment and cross-transport enforcement.
 
-### Applied Use Cases & Documentation
-- **Use cases doc** (`docs/stroopwafel-use-cases-examples.md`): 4 worked examples:
-  1. API gateway chain (attenuation, time-limited, sealed)
-  2. IoT device provisioning (factory → fleet → device hierarchy)
-  3. Cross-org federation with third-party blocks
-  4. Capability-gated nREPL (middleware injection, namespace/op restrictions)
-- **SPKI/SDSI comparison** (`docs/spki-sdsi-vs-biscuit.md`): deep comparison of
-  SPKI's distributed certificates vs Biscuit's centralized authorizer model.
-  Review concerns saved separately.
+### Applied Authorization (v0.10.0 — complete)
+- **Signed envelopes** with UUIDv7 request-ids, audience binding, quorum support
+- **PEP pipeline** — configurable canonicalize → extract → authorize chain
+- **Replay protection** — factory-pattern guard (testable, multiple instances)
+- **Trust-root facts** — Datalog fact generation from trust-root config
+- **SSH key import** — use existing `~/.ssh/id_ed25519` keys
+- All migrated from alpaca-clj and generalized for reuse
 
-### AI Agent Transaction Security
-- **Design doc** (`docs/how-to-let-llms-use-your-credit-card-securely.md`): 1400+ lines
-- Architecture: separation of intent (AI realm) from execution (deterministic realm)
-- Panel-of-judges: heterogeneous LLMs evaluate structured intents against user policy
-- Capability tokens as the cryptographic bridge between realms
-- **Agent authentication via signed requests** (not bearer tokens):
-  - Token carries `[:authorized-agent-key agent-pk]` — bound to specific agent
-  - Agent signs each request with its private key
-  - Execution service verifies request signature against token's agent key
-  - Datalog join: `[:authorized-agent-key ?k]` ∧ `[:request-verified-agent-key ?k]`
-  - One round trip, no separate authN protocol
-  - This is the SPKI model (subject-key binding) expressed as Datalog facts
-- **Holder binding landscape**: Biscuit is bearer-only (no PoP mechanism).
-  Industry trajectory: OAuth bearer → DPoP/mTLS patches → GNAP key-bound-by-default.
-  SPKI/SDSI had key-bound authorization in 1996.
-- Prior art survey: ISACA, CSA, OWASP, NIST, Visa TAP, ERC-8004, AgentSpec, ABC
-- 10 known gaps with severity ratings and mitigations
-- Next step: MCP tool server prototype with Stroopwafel capability gates
+### Design Documents (v0.10.0)
+- **Datalog as authorization join** (`docs/datalog-as-authorization-join.md`):
+  How Datalog joins implement SPKI 5-tuple reduction. Separation of policy,
+  transport mapping, and request concerns. Historical connection to Ellison's work.
+- **WebSocket RPC enforcement** (`docs/websocket-rpc-enforcement.md`):
+  Capability-gated RPC over any channel. From open eval to Datalog-gated dispatch.
+  Why explicit route tables matter as structural whitelists.
 
-### Bug Fix (in this cycle)
-- `datalog.clj:73` `trusted-origins` — `(pos? :authorizer)` ClassCastException
-  when authorizer rules provided without `:trusted-external-keys`. Fixed by
-  changing guard to `(number? block-index)`.
+### Earlier Design Documents
+- **Use cases doc** (`docs/stroopwafel-use-cases-examples.md`): 4 worked examples
+- **SPKI/SDSI comparison** (`docs/spki-sdsi-vs-biscuit.md`): deep comparison
+- **AI agent security** (`docs/how-to-let-llms-use-your-credit-card-securely.md`):
+  1400+ lines on separation of intent from execution, panel-of-judges,
+  capability tokens as the bridge between AI and deterministic realms
+
+### Deployed Integration
+- **alpaca-clj** — capability-gated proxy for Alpaca Markets trading API:
+  - Dual-PEP (client-side + server-side enforcement)
+  - Bearer, SPKI requester-bound, and SDSI group authorization
+  - Data restriction scanning (PII, client names, strategy)
+  - 110 tests, 259 assertions
 
 ## Reference Repos (local)
 
@@ -481,7 +491,18 @@ With Biscuit feature parity achieved, the focus has shifted to:
 - ✓ 120 tests, 213 assertions on JVM + Babashka
 - ✓ Seamless upgrade path: bearer → SPKI → SDSI → multi-token
 
-### Phase 7: ClojureScript
+### Phase 7: Applied Authorization ✓ (v0.10.0)
+- ✓ `stroopwafel.envelope` — generic signed envelopes (UUIDv7 request-id, expiry, quorum digest)
+- ✓ `stroopwafel.ssh` — SSH Ed25519 key import (OpenSSH format → Java key objects)
+- ✓ `stroopwafel.pep` — configurable Policy Enforcement Point pipeline
+- ✓ `stroopwafel.replay` — factory-pattern replay guard (UUIDv7 freshness + nonce cache)
+- ✓ `stroopwafel.trust` — trust-root fact generation for Datalog evaluation
+- ✓ `stroopwafel.crypto` — hex convenience: `export/import-public-key-hex`, `bytes->hex`, `hex->bytes`
+- ✓ Design docs: Datalog as SPKI 5-tuple reduction, WebSocket RPC enforcement
+- ✓ 160 tests, 307 assertions on JVM + Babashka
+- ✓ Migrated from alpaca-clj: envelope, ssh, pep, replay, trust, crypto hex
+
+### Phase 8: ClojureScript
 - .cljc throughout (potentially CLJS/nbb)
 - Cross-platform crypto abstraction (JCA on JVM/bb, Web Crypto API on JS)
 
