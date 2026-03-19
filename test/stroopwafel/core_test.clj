@@ -14,7 +14,7 @@
                   :rules  '[{:id   :can-from-right
                              :head [:can ?u ?a ?r]
                              :body [[:right ?u ?a ?r]]}]}
-                 {:private-key (:priv kp)})
+                 {:private-key (:priv kp) :public-key (:pub kp)})
 
           ;; Delegated block attenuates: only read access
           token (sut/attenuate
@@ -55,7 +55,7 @@
     (let [kp (sut/new-keypair)
           token (sut/issue
                  {:facts [[:user "alice"]]}
-                 {:private-key (:priv kp)})
+                 {:private-key (:priv kp) :public-key (:pub kp)})
           token (sut/attenuate
                  token
                  {:checks [{:id :c1 :query [[:user "alice"]]}]})
@@ -68,7 +68,7 @@
     (let [kp (sut/new-keypair)
           token (sut/issue
                  {:facts [[:user "alice"]]}
-                 {:private-key (:priv kp)})
+                 {:private-key (:priv kp) :public-key (:pub kp)})
           ids1 (sut/revocation-ids token)
           ids2 (sut/revocation-ids token)]
       (t/is (= ids1 ids2)))))
@@ -78,7 +78,7 @@
     (let [kp (sut/new-keypair)
           token1 (sut/issue
                   {:facts [[:user "alice"]]}
-                  {:private-key (:priv kp)})
+                  {:private-key (:priv kp) :public-key (:pub kp)})
           ids1 (sut/revocation-ids token1)
           token2 (sut/attenuate
                   token1
@@ -94,7 +94,7 @@
     (let [kp (sut/new-keypair)
           token (sut/issue
                  {:facts [[:user "alice"]]}
-                 {:private-key (:priv kp)})
+                 {:private-key (:priv kp) :public-key (:pub kp)})
           ids (sut/revocation-ids token)]
       (t/is (= 1 (count ids)))
       (t/is (= 64 (count (first ids))))
@@ -105,7 +105,7 @@
     (let [kp (sut/new-keypair)
           token (sut/issue
                  {:facts [[:right "alice" :read "/data"]]}
-                 {:private-key (:priv kp)})
+                 {:private-key (:priv kp) :public-key (:pub kp)})
           result (sut/evaluate token
                                :authorizer
                                {:policies [{:kind :allow
@@ -117,7 +117,7 @@
     (let [kp (sut/new-keypair)
           token (sut/issue
                  {:facts [[:user "mallory"]]}
-                 {:private-key (:priv kp)})
+                 {:private-key (:priv kp) :public-key (:pub kp)})
           result (sut/evaluate token
                                :authorizer
                                {:policies [{:kind :deny
@@ -131,7 +131,7 @@
     (let [kp (sut/new-keypair)
           token (sut/issue
                  {:facts [[:user "alice"]]}
-                 {:private-key (:priv kp)})
+                 {:private-key (:priv kp) :public-key (:pub kp)})
           result (sut/evaluate token
                                :authorizer
                                {:policies [{:kind :allow
@@ -143,7 +143,7 @@
     (let [kp (sut/new-keypair)
           token (sut/issue
                  {:facts [[:user "alice"] [:role "alice" :admin]]}
-                 {:private-key (:priv kp)})
+                 {:private-key (:priv kp) :public-key (:pub kp)})
           ;; Allow first, deny second — allow wins
           result1 (sut/evaluate token
                                 :authorizer
@@ -167,7 +167,7 @@
           token (sut/issue
                  {:facts  [[:user "alice"]]
                   :checks [{:id :c1 :query [[:admin "alice"]]}]}
-                 {:private-key (:priv kp)})
+                 {:private-key (:priv kp) :public-key (:pub kp)})
           ;; Policy would allow, but check fails first
           result (sut/evaluate token
                                :authorizer
@@ -180,7 +180,7 @@
     (let [kp (sut/new-keypair)
           token (sut/issue
                  {:facts [[:user "alice"]]}
-                 {:private-key (:priv kp)})
+                 {:private-key (:priv kp) :public-key (:pub kp)})
           token (sut/attenuate
                  token
                  {:facts [[:role "alice" :admin]]})
@@ -198,7 +198,7 @@
                  {:facts  [[:user "alice"]]
                   :checks [{:id :c1
                             :query [[:user "alice"]]}]}
-                 {:private-key (:priv kp)})
+                 {:private-key (:priv kp) :public-key (:pub kp)})
           result (sut/evaluate token :explain? true)]
       (t/is (true? (:valid? result)))
       (t/is (some? (:explain result))))))
@@ -208,7 +208,7 @@
     (let [kp (sut/new-keypair)
           token (sut/issue
                  {:facts [[:user "alice"]]}
-                 {:private-key (:priv kp)})
+                 {:private-key (:priv kp) :public-key (:pub kp)})
           ;; Attenuate without providing any key
           token2 (sut/attenuate token {:checks [{:id :c1 :query [[:user "alice"]]}]})
           token3 (sut/attenuate token2 {:checks [{:id :c2 :query [[:user "alice"]]}]})]
@@ -220,7 +220,7 @@
     (let [kp (sut/new-keypair)
           token (sut/issue
                  {:facts [[:user "alice"]]}
-                 {:private-key (:priv kp)})]
+                 {:private-key (:priv kp) :public-key (:pub kp)})]
       (t/is (some? (:proof token)))
       (t/is (crypto/ed25519-private-key? (:proof token))))))
 
@@ -229,7 +229,7 @@
     (let [kp (sut/new-keypair)
           token (sut/issue
                  {:facts [[:user "alice"]]}
-                 {:private-key (:priv kp)})
+                 {:private-key (:priv kp) :public-key (:pub kp)})
           sealed (sut/seal token)]
       (t/is (true? (sut/sealed? sealed)))
       (t/is (true? (sut/verify sealed {:public-key (:pub kp)}))))))
@@ -239,7 +239,7 @@
     (let [kp (sut/new-keypair)
           token (sut/issue
                  {:facts [[:user "alice"]]}
-                 {:private-key (:priv kp)})
+                 {:private-key (:priv kp) :public-key (:pub kp)})
           sealed (sut/seal token)]
       (t/is (thrown-with-msg? clojure.lang.ExceptionInfo
                               #"Cannot attenuate a sealed token"
@@ -251,7 +251,7 @@
           token (sut/issue
                  {:facts  [[:user "alice"]]
                   :checks [{:id :c1 :query [[:user "alice"]]}]}
-                 {:private-key (:priv kp)})
+                 {:private-key (:priv kp) :public-key (:pub kp)})
           sealed (sut/seal token)
           r1 (sut/evaluate token)
           r2 (sut/evaluate sealed)]
@@ -262,7 +262,7 @@
     (let [kp (sut/new-keypair)
           token (sut/issue
                  {:facts [[:user "alice"]]}
-                 {:private-key (:priv kp)})
+                 {:private-key (:priv kp) :public-key (:pub kp)})
           sealed (sut/seal token)]
       (t/is (thrown-with-msg? clojure.lang.ExceptionInfo
                               #"already sealed"
@@ -273,7 +273,7 @@
     (let [kp (sut/new-keypair)
           token (sut/issue
                  {:facts [[:right "alice" :read "/data"]]}
-                 {:private-key (:priv kp)})
+                 {:private-key (:priv kp) :public-key (:pub kp)})
           token (sut/attenuate token {:checks [{:id :c1 :query [[:right "alice" :read "/data"]]}]})
           sealed (sut/seal token)]
       (t/is (= 2 (count (:blocks sealed))))
@@ -290,7 +290,7 @@
                   :checks '[{:id    :check-expiry
                              :query [[:time ?t]]
                              :when  [(< ?t 2000000000000)]}]}
-                 {:private-key (:priv kp)})
+                 {:private-key (:priv kp) :public-key (:pub kp)})
           ;; Time before expiry — should pass
           result-ok (sut/evaluate token
                                   :authorizer
@@ -314,7 +314,7 @@
                   :checks '[{:id    :max-transfer
                              :query [[:transfer-amount ?a]]
                              :when  [(<= ?a 10000)]}]}
-                 {:private-key (:priv kp)})
+                 {:private-key (:priv kp) :public-key (:pub kp)})
           result-ok (sut/evaluate token
                                   :authorizer
                                   {:facts [[:transfer-amount 5000]]})
@@ -332,7 +332,7 @@
                   :checks '[{:id    :public-only
                              :query [[:resource ?r]]
                              :when  [(str/starts-with? ?r "/public/")]}]}
-                 {:private-key (:priv kp)})
+                 {:private-key (:priv kp) :public-key (:pub kp)})
           result-ok (sut/evaluate token
                                   :authorizer
                                   {:facts [[:resource "/public/docs"]]})
@@ -347,7 +347,7 @@
     (let [kp (sut/new-keypair)
           token (sut/issue
                  {:facts [[:role "alice" :admin]]}
-                 {:private-key (:priv kp)})
+                 {:private-key (:priv kp) :public-key (:pub kp)})
           ;; Amount within limit — policy allows
           result-ok (sut/evaluate token
                                   :authorizer
@@ -375,7 +375,7 @@
           ;; 1. Issue token
           token (sut/issue
                  {:facts [[:user "alice"]]}
-                 {:private-key (:priv root-kp)})
+                 {:private-key (:priv root-kp) :public-key (:pub root-kp)})
 
           ;; 2. Token holder creates request
           request (sut/third-party-request token)
@@ -418,10 +418,10 @@
 
           token-a (sut/issue
                    {:facts [[:user "alice"]]}
-                   {:private-key (:priv root-kp)})
+                   {:private-key (:priv root-kp) :public-key (:pub root-kp)})
           token-b (sut/issue
                    {:facts [[:user "bob"]]}
-                   {:private-key (:priv root-kp)})
+                   {:private-key (:priv root-kp) :public-key (:pub root-kp)})
 
           ;; Create request for token A
           request-a (sut/third-party-request token-a)
@@ -447,7 +447,7 @@
           idp-kp  (sut/new-keypair)
           token (sut/issue
                  {:facts [[:user "alice"]]}
-                 {:private-key (:priv root-kp)})
+                 {:private-key (:priv root-kp) :public-key (:pub root-kp)})
 
           ;; Get request before sealing
           request (sut/third-party-request token)
@@ -473,7 +473,7 @@
 
           token (sut/issue
                  {:facts [[:user "alice"]]}
-                 {:private-key (:priv root-kp)})
+                 {:private-key (:priv root-kp) :public-key (:pub root-kp)})
 
           ;; First-party attenuation
           token (sut/attenuate token
@@ -506,7 +506,7 @@
           idp-kp  (sut/new-keypair)
           token (sut/issue
                  {:facts [[:user "alice"]]}
-                 {:private-key (:priv root-kp)})
+                 {:private-key (:priv root-kp) :public-key (:pub root-kp)})
           request (sut/third-party-request token)
           tp-block (sut/create-third-party-block
                     request
@@ -525,7 +525,7 @@
           idp-kp  (sut/new-keypair)
           token (sut/issue
                  {:facts [[:user "alice"]]}
-                 {:private-key (:priv root-kp)})
+                 {:private-key (:priv root-kp) :public-key (:pub root-kp)})
           request (sut/third-party-request token)
           tp-block (sut/create-third-party-block
                     request

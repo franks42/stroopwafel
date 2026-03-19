@@ -16,7 +16,7 @@
   (t/testing "Single token with matching policy allows"
     (let [root-kp (sw/new-keypair)
           token   (sw/issue {:facts [[:right "alice" :read "/data"]]}
-                            {:private-key (:priv root-kp)})
+                            {:private-key (:priv root-kp) :public-key (:pub root-kp)})
           result  (-> (auth/context)
                       (auth/add-token token {:public-key (:pub root-kp)})
                       (auth/authorize
@@ -29,7 +29,7 @@
     (let [root-kp  (sw/new-keypair)
           wrong-kp (sw/new-keypair)
           token    (sw/issue {:facts [[:x 1]]}
-                             {:private-key (:priv root-kp)})
+                             {:private-key (:priv root-kp) :public-key (:pub root-kp)})
           result   (-> (auth/context)
                        (auth/add-token token {:public-key (:pub wrong-kp)})
                        (auth/authorize
@@ -47,12 +47,12 @@
           ;; IdP issues name certificate
           name-cert (sw/issue
                       {:facts [[:named-key "ops-team" (byte-array [1 2 3])]]}
-                      {:private-key (:priv idp-kp)})
+                      {:private-key (:priv idp-kp) :public-key (:pub idp-kp)})
 
           ;; Service issues capability
           capability (sw/issue
                        {:facts [[:right "ops-team" :read "/metrics"]]}
-                       {:private-key (:priv service-kp)})
+                       {:private-key (:priv service-kp) :public-key (:pub service-kp)})
 
           result (-> (auth/context)
                      (auth/add-token name-cert {:public-key (:pub idp-kp)})
@@ -70,9 +70,9 @@
           wrong-kp (sw/new-keypair)
 
           good-token (sw/issue {:facts [[:x 1]]}
-                               {:private-key (:priv good-kp)})
+                               {:private-key (:priv good-kp) :public-key (:pub good-kp)})
           bad-token  (sw/issue {:facts [[:y 2]]}
-                               {:private-key (:priv bad-kp)})
+                               {:private-key (:priv bad-kp) :public-key (:pub bad-kp)})
 
           result (-> (auth/context)
                      (auth/add-token good-token {:public-key (:pub good-kp)})
@@ -94,12 +94,12 @@
           ;; IdP: this agent is in ops-team
           name-cert (sw/issue
                       {:facts [[:named-key "ops-team" agent-pk]]}
-                      {:private-key (:priv idp-kp)})
+                      {:private-key (:priv idp-kp) :public-key (:pub idp-kp)})
 
           ;; Service: ops-team can read metrics
           capability (sw/issue
                        {:facts [[:right "ops-team" :read "/metrics"]]}
-                       {:private-key (:priv service-kp)})
+                       {:private-key (:priv service-kp) :public-key (:pub service-kp)})
 
           ;; Agent signs request
           signed (req/sign-request {:action :read :path "/metrics"}
@@ -130,11 +130,11 @@
 
           name-cert (sw/issue
                       {:facts [[:named-key "ops-team" member-pk]]}
-                      {:private-key (:priv idp-kp)})
+                      {:private-key (:priv idp-kp) :public-key (:pub idp-kp)})
 
           capability (sw/issue
                        {:facts [[:right "ops-team" :read "/metrics"]]}
-                       {:private-key (:priv service-kp)})
+                       {:private-key (:priv service-kp) :public-key (:pub service-kp)})
 
           ;; Outsider signs
           signed (req/sign-request {:action :read}
@@ -160,7 +160,7 @@
           agent-kp (sw/new-keypair)
 
           token (sw/issue {:facts [[:x 1]]}
-                          {:private-key (:priv root-kp)})
+                          {:private-key (:priv root-kp) :public-key (:pub root-kp)})
 
           signed (req/sign-request {:action :read}
                                    (:priv agent-kp) (:pub agent-kp))
@@ -184,7 +184,7 @@
                     {:facts  [[:right :read "/data"]]
                      :checks '[{:id    :needs-time
                                 :query [[:time ?t]]}]}
-                    {:private-key (:priv root-kp)})
+                    {:private-key (:priv root-kp) :public-key (:pub root-kp)})
 
           ;; Without providing time fact, check fails
           result-no-time
@@ -216,17 +216,17 @@
           ;; IdP: agent identity
           name-cert (sw/issue
                       {:facts [[:named-key "traders" agent-pk]]}
-                      {:private-key (:priv idp-kp)})
+                      {:private-key (:priv idp-kp) :public-key (:pub idp-kp)})
 
           ;; Service: what traders can do
           capability (sw/issue
                        {:facts [[:right "traders" :trade "/api/orders"]]}
-                       {:private-key (:priv service-kp)})
+                       {:private-key (:priv service-kp) :public-key (:pub service-kp)})
 
           ;; Risk: trading limits
           limits (sw/issue
                    {:facts [[:limit "traders" :max-amount 10000]]}
-                   {:private-key (:priv limits-kp)})
+                   {:private-key (:priv limits-kp) :public-key (:pub limits-kp)})
 
           signed (req/sign-request {:action :trade :amount 5000}
                                    (:priv agent-kp) (:pub agent-kp))

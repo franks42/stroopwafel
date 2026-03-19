@@ -21,24 +21,25 @@
      message     — any canonicalizable EDN value (opaque to envelope)
      private-key — Ed25519 private key
      public-key  — Ed25519 public key
-     ttl-seconds — how long the envelope is valid (default 120)
+     ttl-seconds — (optional) how long the envelope is valid
+                   nil → no :expires field (validity is a policy concern)
+                   number → :expires computed from now + ttl
 
    Returns:
      {:type      :stroopwafel/signed-envelope
       :envelope  {:message <message> :signer-key <pk-bytes>
-                  :request-id <UUIDv7-string> :expires <epoch-ms>}
+                  :request-id <UUIDv7-string> [:expires <epoch-ms>]}
       :signature <bytes>}"
   ([message private-key public-key]
-   (sign message private-key public-key 120))
+   (sign message private-key public-key nil))
   ([message private-key public-key ttl-seconds]
    (let [now        (System/currentTimeMillis)
-         expires    (+ now (* ttl-seconds 1000))
          pk-bytes   (crypto/encode-public-key public-key)
          request-id (str (uuidv7/uuidv7))
-         inner      {:message    message
-                     :signer-key pk-bytes
-                     :request-id request-id
-                     :expires    expires}
+         inner      (cond-> {:message    message
+                             :signer-key pk-bytes
+                             :request-id request-id}
+                      ttl-seconds (assoc :expires (+ now (* ttl-seconds 1000))))
          sig-bytes  (-> inner crypto/encode-block crypto/sha256
                         (->> (crypto/sign private-key)))]
      {:type      :stroopwafel/signed-envelope
@@ -82,16 +83,17 @@
                    (uuidv7/extract-ts (parse-uuid request-id))
                    (catch Exception _ nil))
         age-ms   (when ts (- now ts))]
-    {:valid?          valid?
-     :message         message
-     :signer-key      signer-key
-     :request-id      request-id
-     :timestamp       ts
-     :expires         expires
-     :expired?        (> now expires)
-     :age-ms          age-ms
-     :digest          hash
-     :message-digest  msg-hash}))
+    (cond-> {:valid?          valid?
+              :message         message
+              :signer-key      signer-key
+              :request-id      request-id
+              :timestamp       ts
+              :age-ms          age-ms
+              :digest          hash
+              :message-digest  msg-hash}
+      expires       (assoc :expires expires)
+      expires       (assoc :expired? (> now expires))
+      (nil? expires) (assoc :expired? false))))
 
 (defn serialize
   "Serialize an outer envelope to a CEDN string for transport."

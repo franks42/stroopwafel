@@ -26,11 +26,17 @@
    The context accumulates verified facts, checks, rules, and
    third-party signer information from multiple tokens."
   []
-  {:facts   []
+  {:type    :stroopwafel/authorization-context
+   :facts   []
    :checks  []
    :rules   []
    :signers []
    :errors  []})
+
+(defn- block-content
+  "Extract message content from a signed-envelope block."
+  [block]
+  (get-in block [:envelope :message]))
 
 (defn- extract-token-info
   "Extracts facts, checks, rules, and signer info from a verified token.
@@ -49,14 +55,15 @@
         block-info
         (map-indexed
          (fn [idx block]
-           (let [ext-key    (:external-key block)
+           (let [content    (block-content block)
+                 ext-key    (:external-key content)
                  is-tp?     (some? ext-key)
                  trusted?   (and is-tp? trusted-encoded
                                  (some #(crypto/bytes= ext-key %) trusted-encoded))]
              {:idx        idx
-              :facts      (:facts block)
-              :checks     (or (:checks block) [])
-              :rules      (or (:rules block) [])
+              :facts      (:facts content)
+              :checks     (or (:checks content) [])
+              :rules      (or (:rules content) [])
               :external-key ext-key
               :third-party? is-tp?
               :trusted?   (or (not is-tp?) trusted?)}))

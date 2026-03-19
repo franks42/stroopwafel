@@ -2,20 +2,29 @@
   (:require [stroopwafel.block :as block]
             [stroopwafel.datalog :as datalog]
             [stroopwafel.graph :as graph]
-            [stroopwafel.crypto :as crypto]))
+            [stroopwafel.crypto :as crypto]
+            [stroopwafel.envelope :as envelope]))
 
 (defn new-keypair
   "Helper to generate a new asymmetric keypair for signing and verification
 
-   Returns a `java.security.KeyPair` instance containing:
-     - a private key (used for signing blocks)
-     - a public key  (used for verification)
+   Returns a map containing:
+     - :priv — private key (used for signing blocks)
+     - :pub  — public key  (used for verification)
 
-   Uses Ed25519 algoritm in this PoC"
+   Uses Ed25519 algorithm."
   []
   (let [kp (crypto/generate-keypair "Ed25519")]
     {:priv (.getPrivate kp)
      :pub (.getPublic kp)}))
+
+(defn- block-content
+  "Extract the message content from a signed-envelope block.
+   Also handles bare content maps (for synthetic tokens in authorize)."
+  [block]
+  (if (envelope/signed-envelope? block)
+    (get-in block [:envelope :message])
+    block))
 
 (defn issue
   "Creates a new authority token.
@@ -33,21 +42,29 @@
        | `:checks` | vector of check maps (optional)
      - opts map with:
          `:private-key` — root private key (required)
+         `:public-key`  — root public key (optional, derived from keypair)
 
    Returns:
      A token map:
      ```clojure
-     {:blocks [authority-block]
+     {:type   :stroopwafel/token
+      :blocks [<signed-envelope>]
       :proof  <ephemeral-private-key>}
      ```"
-  [{:keys [facts rules checks] :as _blocks} {:keys [private-key] :as _opts}]
-  (let [{:keys [block next-private-key]}
+  [{:keys [facts rules checks] :as _blocks} {:keys [private-key public-key]}]
+  (let [pub-key (or public-key
+                    ;; Backward compat: if only private-key given, caller must
+                    ;; also pass public-key. This will fail at envelope/sign if nil.
+                    nil)
+        {:keys [block next-private-key]}
         (block/authority-block
          (or facts [])
          (or rules [])
          (or checks [])
-         private-key)]
-    {:blocks [block]
+         private-key
+         pub-key)]
+    {:type   :stroopwafel/token
+     :blocks [block]
      :proof  next-private-key}))
 
 (defn sealed?
@@ -82,14 +99,19 @@
   (when (sealed? token)
     (throw (ex-info "Cannot attenuate a sealed token" {})))
   (let [prev-block (peek (:blocks token))
+        ;; Ephemeral key: derive pk from the previous block's next-key
+        prev-content (block-content prev-block)
+        eph-pub-key (crypto/decode-public-key (:next-key prev-content))
         {:keys [block next-private-key]}
         (block/delegated-block
          prev-block
          (or facts [])
          (or rules [])
          (or checks [])
-         (:proof token))]
-    {:blocks (conj (:blocks token) block)
+         (:proof token)
+         eph-pub-key)]
+    {:type   :stroopwafel/token
+     :blocks (conj (:blocks token) block)
      :proof  next-private-key}))
 
 (defn third-party-request
@@ -108,7 +130,8 @@
   [token]
   (when (sealed? token)
     (throw (ex-info "Cannot create third-party request from a sealed token" {})))
-  {:previous-sig (:sig (peek (:blocks token)))})
+  {:type :stroopwafel/third-party-request
+   :previous-sig (:signature (peek (:blocks token)))})
 
 (defn create-third-party-block
   "Creates a third-party signed block (called by the external party).
@@ -134,7 +157,8 @@
         ext-bytes   (crypto/encode-block ext-payload)
         ext-hash    (crypto/sha256 ext-bytes)
         ext-sig     (crypto/sign private-key ext-hash)]
-    {:facts        facts
+    {:type         :stroopwafel/third-party-block
+     :facts        facts
      :rules        rules
      :checks       checks
      :external-sig ext-sig
@@ -158,19 +182,22 @@
   [token tp-block]
   (when (sealed? token)
     (throw (ex-info "Cannot append to a sealed token" {})))
-  (let [prev-block (peek (:blocks token))
+  (let [prev-block   (peek (:blocks token))
+        prev-content (block-content prev-block)
+        eph-pub-key  (crypto/decode-public-key (:next-key prev-content))
         {:keys [block next-private-key]}
-        (block/third-party-block prev-block tp-block (:proof token))]
-    {:blocks (conj (:blocks token) block)
+        (block/third-party-block prev-block tp-block (:proof token) eph-pub-key)]
+    {:type   :stroopwafel/token
+     :blocks (conj (:blocks token) block)
      :proof  next-private-key}))
 
 (defn seal
   "Seals a token to prevent further attenuation.
 
-   Signs the last block's hash with the current ephemeral private key,
-   then discards the key. The proof becomes a signature that can be
-   verified against the last block's `:next-key`, but no one can
-   append new blocks.
+   Signs the last block's envelope digest with the current ephemeral
+   private key, then discards the key. The proof becomes a signature
+   that can be verified against the last block's :next-key, but no one
+   can append new blocks.
 
    Arguments:
      - `token` : unsealed token map
@@ -182,8 +209,11 @@
   (when (sealed? token)
     (throw (ex-info "Token is already sealed" {})))
   (let [last-block (peek (:blocks token))
-        seal-sig   (crypto/sign (:proof token) (:hash last-block))]
-    {:blocks (:blocks token)
+        ;; Compute digest of the last block's envelope (same as verify does)
+        digest     (crypto/sha256 (crypto/encode-block (:envelope last-block)))
+        seal-sig   (crypto/sign (:proof token) digest)]
+    {:type   :stroopwafel/token
+     :blocks (:blocks token)
      :proof  {:type :sealed :sig seal-sig}}))
 
 (defn verify
@@ -204,12 +234,15 @@
      - `true` if the block chain (and seal, if present) is valid
      - `false` otherwise"
   [token {:keys [public-key] :as _opts}]
-  (let [chain-ok? (block/verify-chain (:blocks token) public-key)]
+  (let [root-pk-bytes (crypto/encode-public-key public-key)
+        chain-ok?     (block/verify-chain (:blocks token) root-pk-bytes)]
     (if (and chain-ok? (sealed? token))
-      (let [last-block (peek (:blocks token))
-            seal-key   (crypto/decode-public-key (:next-key last-block))]
+      (let [last-block   (peek (:blocks token))
+            last-content (block-content last-block)
+            seal-key     (crypto/decode-public-key (:next-key last-content))
+            digest       (crypto/sha256 (crypto/encode-block (:envelope last-block)))]
         (crypto/verify seal-key
-                       (:hash last-block)
+                       digest
                        (get-in token [:proof :sig])))
       chain-ok?)))
 
@@ -241,9 +274,12 @@
      Assumes the token has already been
      cryptographically verified."
   [token & {:keys [explain? authorizer]}]
-  (let [core-token
+  (let [;; Extract logical content from each block's message
+        core-token
         {:blocks
-         (mapv #(select-keys % [:facts :rules :checks])
+         (mapv (fn [block]
+                 (let [content (block-content block)]
+                   (select-keys content [:facts :rules :checks])))
                (:blocks token))}
 
         ;; Compute trusted third-party block indices and signer attribution
@@ -254,9 +290,11 @@
         (when trusted-encoded
           (keep-indexed
            (fn [idx block]
-             (when-let [ext-key (:external-key block)]
-               (when (some #(crypto/bytes= ext-key %) trusted-encoded)
-                 {:idx idx :external-key ext-key})))
+             (let [content (block-content block)
+                   ext-key (:external-key content)]
+               (when ext-key
+                 (when (some #(crypto/bytes= ext-key %) trusted-encoded)
+                   {:idx idx :external-key ext-key}))))
            (:blocks token)))
 
         trusted-block-indices (when trusted-info
@@ -295,7 +333,7 @@
      A vector of hex strings, one per block, in chain order."
   [token]
   (mapv (fn [block]
-          (let [sig-hash (crypto/sha256 (:sig block))]
+          (let [sig-hash (crypto/sha256 (:signature block))]
             (apply str (map #(format "%02x" %) sig-hash))))
         (:blocks token)))
 

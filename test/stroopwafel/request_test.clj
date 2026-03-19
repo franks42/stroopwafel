@@ -56,7 +56,7 @@
                  {:facts [[:authorized-agent-key agent-pk-bytes]
                           [:resource "/api/transfer"]
                           [:limit 1000]]}
-                 {:private-key (:priv root-kp)})
+                 {:private-key (:priv root-kp) :public-key (:pub root-kp)})
 
           ;; Agent signs a request
           signed (req/sign-request {:action :transfer :amount 500}
@@ -89,7 +89,7 @@
           token (sw/issue
                  {:facts [[:authorized-agent-key agent-pk-bytes]
                           [:resource "/api/transfer"]]}
-                 {:private-key (:priv root-kp)})
+                 {:private-key (:priv root-kp) :public-key (:pub root-kp)})
 
           ;; Attacker signs request with their own key
           signed (req/sign-request {:action :transfer :amount 500}
@@ -122,7 +122,7 @@
                  {:facts [[:authorized-agent-key agent-pk-bytes]
                           [:right :read "/api/data"]
                           [:right :write "/api/data"]]}
-                 {:private-key (:priv root-kp)})
+                 {:private-key (:priv root-kp) :public-key (:pub root-kp)})
 
           ;; Attenuate: restrict to read-only
           restricted (sw/attenuate token
@@ -154,7 +154,7 @@
           token (sw/issue
                  {:facts [[:authorized-agent-key agent-pk-bytes]
                           [:limit 1000]]}
-                 {:private-key (:priv root-kp)})
+                 {:private-key (:priv root-kp) :public-key (:pub root-kp)})
 
           signed (req/sign-request {:action :transfer :amount 500}
                                    (:priv agent-kp) (:pub agent-kp))
@@ -203,7 +203,7 @@
           token (sw/issue
                  {:facts [[:right "ops-team" :read "/api/metrics"]
                           [:right "ops-team" :restart "/api/service"]]}
-                 {:private-key (:priv root-kp)})
+                 {:private-key (:priv root-kp) :public-key (:pub root-kp)})
 
           ;; Agent A signs request
           signed (req/sign-request {:action :read} (:priv agent-a) (:pub agent-a))
@@ -224,7 +224,7 @@
 
           token (sw/issue
                  {:facts [[:right "ops-team" :read "/api/metrics"]]}
-                 {:private-key (:priv root-kp)})
+                 {:private-key (:priv root-kp) :public-key (:pub root-kp)})
 
           ;; Outsider signs request
           signed (req/sign-request {:action :read} (:priv outsider) (:pub outsider))
@@ -247,7 +247,7 @@
           token (sw/issue
                  {:facts [[:right "readers" :read "/api/data"]
                           [:right "writers" :write "/api/data"]]}
-                 {:private-key (:priv root-kp)})
+                 {:private-key (:priv root-kp) :public-key (:pub root-kp)})
 
           ;; Alice is a reader, Bob is a writer
           signed-a (req/sign-request {:action :read} (:priv alice) (:pub alice))
@@ -282,7 +282,7 @@
           token (sw/issue
                  {:facts [[:right "ops-team" :read "/api/metrics"]
                           [:right "ops-team" :restart "/api/service"]]}
-                 {:private-key (:priv root-kp)})
+                 {:private-key (:priv root-kp) :public-key (:pub root-kp)})
 
           ;; Attenuate: read-only
           restricted (sw/attenuate token
@@ -307,7 +307,7 @@
           ;; Token with name-based entitlements
           token (sw/issue
                  {:facts [[:right "verified-users" :read "/api/data"]]}
-                 {:private-key (:priv root-kp)})
+                 {:private-key (:priv root-kp) :public-key (:pub root-kp)})
 
           ;; IdP signs a third-party block attesting the name→key binding
           tp-req (sw/third-party-request token)
@@ -350,7 +350,7 @@
                  {:facts [[:right "authorized-client" :read "/api/data"]
                           [:right "authorized-client" :write "/api/data"]
                           [:can-name "authorized-client" idp-pk]]}
-                 {:private-key (:priv root-kp)})
+                 {:private-key (:priv root-kp) :public-key (:pub root-kp)})
 
           ;; IdP signs third-party block asserting group membership
           tp-req (sw/third-party-request token)
@@ -397,7 +397,7 @@
           token (sw/issue
                  {:facts [[:right "authorized-client" :read "/api/data"]
                           [:can-name "authorized-client" idp-pk]]}
-                 {:private-key (:priv root-kp)})
+                 {:private-key (:priv root-kp) :public-key (:pub root-kp)})
 
           ;; Rogue signs a third-party block claiming membership
           tp-req (sw/third-party-request token)
@@ -443,7 +443,7 @@
                  {:facts [[:right "group-a" :read "/data"]
                           [:can-name-if-member "group-a" "group-b"]
                           [:can-name-if-member "group-b" "group-a"]]}
-                 {:private-key (:priv root-kp)})
+                 {:private-key (:priv root-kp) :public-key (:pub root-kp)})
 
           tp-req (sw/third-party-request token)
           tp-block (sw/create-third-party-block
@@ -495,7 +495,7 @@
                           [:can-name-if-member "authorized-client" "client-authorities"]
                           [:named-key "client-authorities" idp-a-pk]
                           [:named-key "client-authorities" idp-b-pk]]}
-                 {:private-key (:priv root-kp)})
+                 {:private-key (:priv root-kp) :public-key (:pub root-kp)})
 
           ;; IdP-B signs third-party block asserting agent membership
           tp-req (sw/third-party-request token)
