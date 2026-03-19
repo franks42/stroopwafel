@@ -10,7 +10,7 @@ from [KEX](https://github.com/serefayar/kex).
 Like a stroopwafel: two layers with something sealed between them — signed
 blocks wrapping authorized data.
 
-**Current version**: v0.10.1 (Applied authorization: envelope, PEP, replay, trust)
+**Current version**: v0.10.2 (Unified signed-envelope block format)
 
 ## Goals
 
@@ -84,7 +84,7 @@ CEDN 1.2.0 adds native byte array support via `#bytes "hex"` tagged literal,
 which was specifically requested for stroopwafel's signing pipeline (SHA-256
 hashes and Ed25519 signatures are byte arrays).
 
-## Current Architecture (v0.10.0)
+## Current Architecture (v0.10.2)
 
 ```
 stroopwafel/
@@ -132,7 +132,7 @@ stroopwafel/
         └── trust_test.clj      ← 5 tests (single key, scoped map, nil)
 ```
 
-160 tests, 307 assertions. clj-kondo clean, cljfmt clean.
+162 tests, 319 assertions. clj-kondo clean, cljfmt clean.
 
 ## Dependencies
 
@@ -208,6 +208,26 @@ CEDN and UUIDv7 have zero transitive deps.
     third-party block facts become visible to authorizer rules, checks, and
     policies — but NOT to other first-party blocks (per-block scope unchanged).
 
+13. **Typed maps convention**: Every significant data structure carries a
+    namespaced `:type` keyword identifying what it is. This is the primary
+    dispatch mechanism — multimethods, predicates, logging, and introspection
+    all use `:type` rather than inspecting structure. The convention replaces
+    `defrecord`/`deftype` (which don't survive CEDN serialization) with plain
+    maps that are self-describing, serializable, and canonicalizable.
+    Current types:
+    - `:stroopwafel/signed-envelope` — any signed payload
+    - `:stroopwafel/token` — capability token (chain of signed envelopes)
+    - `:stroopwafel/third-party-request` — request for third-party signing
+    - `:stroopwafel/third-party-block` — third-party signed block response
+    - `:stroopwafel/authorization-context` — multi-token PDP context
+
+14. **Unified signed-envelope format**: Blocks and request envelopes use the
+    same self-describing signed structure. One format, one verify function,
+    clean separation of payload (`:envelope`) and `:signature`. No `dissoc`
+    hack for verification. `:expires` is optional — validity is a policy
+    concern in the Datalog facts, not transport. Nested signing works
+    (turtles all the way down) for multi-signature scenarios.
+
 ## Authorizer API
 
 The `evaluate` function accepts an `:authorizer` keyword argument:
@@ -269,7 +289,7 @@ bindings. Guards are Clojure forms evaluated by a whitelisted mini-interpreter
    :checks '[{:id    :check-expiry
               :query [[:time ?t]]
               :when  [(< ?t 1709251200000)]}]}  ;; expires March 2024
-  {:private-key root-sk})
+  {:private-key root-sk :public-key root-pk})
 
 ;; Authorizer provides current time + policy with guard
 (stroopwafel.core/evaluate token
@@ -355,10 +375,18 @@ facts are invisible to the authorizer (backward compatible).
 | Multi-token composition | No | ✓ | Stroopwafel-only — PDP/PEP separation |
 | Cross-platform | Multi-lang | ✓ JVM + Babashka | CLJS remains Phase 4 |
 
-## Current Work Direction (as of v0.10.0)
+## Current Work Direction (as of v0.10.2)
 
 With Biscuit feature parity achieved and applied authorization modules complete,
 the focus is on real-world deployment and cross-transport enforcement.
+
+### Unified Signed-Envelope Blocks (v0.10.2 — complete)
+- **Blocks are now signed envelopes** — same `{:type :stroopwafel/signed-envelope ...}` format
+- **Self-describing types** — `:type :stroopwafel/token` and `:type :stroopwafel/signed-envelope` enable multimethod dispatch
+- **Clean payload/signature separation** — no more `dissoc :hash :sig` for verification
+- **Optional `:expires`** — nil ttl = no expiry; validity is a policy concern in facts, not transport
+- **`sw/issue` requires `:public-key`** — both `:private-key` and `:public-key` in opts
+- **Nested signing** — turtles all the way down for multi-signature scenarios
 
 ### Applied Authorization (v0.10.0 — complete)
 - **Signed envelopes** with UUIDv7 request-ids, audience binding, quorum support
@@ -501,6 +529,15 @@ the focus is on real-world deployment and cross-transport enforcement.
 - ✓ Design docs: Datalog as SPKI 5-tuple reduction, WebSocket RPC enforcement
 - ✓ 160 tests, 307 assertions on JVM + Babashka
 - ✓ Migrated from alpaca-clj: envelope, ssh, pep, replay, trust, crypto hex
+
+### Phase 7b: Unified Signed-Envelope Blocks ✓ (v0.10.2)
+- ✓ Blocks use the same signed-envelope format as requests
+- ✓ Self-describing `:type` field on all signed structures (`:stroopwafel/signed-envelope`, `:stroopwafel/token`)
+- ✓ Clean separation of `:envelope` payload and `:signature` — no `dissoc :hash :sig`
+- ✓ `:expires` is optional (nil ttl = no expires)
+- ✓ `sw/issue` requires both `:private-key` and `:public-key` in opts
+- ✓ Nested signing supported for multi-signature scenarios
+- ✓ 162 tests, 319 assertions on JVM + Babashka
 
 ### Phase 8: ClojureScript
 - .cljc throughout (potentially CLJS/nbb)

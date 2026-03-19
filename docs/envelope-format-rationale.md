@@ -112,6 +112,36 @@ Wire:      {:envelope <above> :signature #bytes "d4e5f6..."}
 
 ---
 
+## Unified Signing: Blocks Use the Same Format
+
+As of v0.10.2, token blocks also use the signed-envelope format. Every
+signed structure in stroopwafel is a self-describing envelope:
+
+```clojure
+{:type      :stroopwafel/signed-envelope
+ :envelope  {:message    {:facts [...] :rules [...] :checks [...]
+                          :prev-sig ... :next-key ...}
+             :signer-key pk-bytes
+             :request-id "uuid"}
+ :signature sig-bytes}
+```
+
+Tokens carry `:type :stroopwafel/token`. The `:type` field enables
+multimethod dispatch — code can handle any signed structure uniformly
+without inspecting its internals.
+
+This unification eliminates the old pattern of `dissoc :hash :sig`
+before verification. The payload (`:envelope`) and the signature
+(`:signature`) are cleanly separated at the top level. Nested signing
+works naturally — an envelope's message can itself be a signed
+envelope, turtles all the way down, for multi-signature scenarios.
+
+`:expires` is optional in envelopes (nil ttl = no expiry). Validity
+constraints are a policy concern expressed as Datalog facts, not a
+transport-level field.
+
+---
+
 ## What the Payload Can Be
 
 The payload is not required to be CEDN — it is any EDN value
@@ -139,7 +169,7 @@ transparently. The author never thinks about canonical form.
 | **Algorithm** | Negotiated via `alg` header | Fixed Ed25519 |
 | **Signer identity** | `kid` header (key ID reference) | `:signer-key` (full pk bytes) |
 | **Timestamp** | `iat` claim (optional) | UUIDv7 `:request-id` (mandatory, also nonce) |
-| **Expiry** | `exp` claim (optional) | `:expires` (mandatory) |
+| **Expiry** | `exp` claim (optional) | `:expires` (optional; validity via Datalog facts) |
 | **Audience** | `aud` claim (optional) | `:audience` in message (optional) |
 | **Replay protection** | `jti` claim (optional, no spec for checking) | UUIDv7 nonce + replay guard (built in) |
 | **Requester binding** | None (DPoP/RFC 9449 bolted on later) | `:signer-key` + signed envelope (built in) |
