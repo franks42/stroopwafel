@@ -10,7 +10,7 @@ from [KEX](https://github.com/serefayar/kex).
 Like a stroopwafel: two layers with something sealed between them — signed
 blocks wrapping authorized data.
 
-**Current version**: v0.10.0 (Applied authorization: envelope, PEP, replay, trust)
+**Current version**: v0.10.1 (Applied authorization: envelope, PEP, replay, trust)
 
 ## Goals
 
