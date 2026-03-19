@@ -392,6 +392,73 @@ if the result is non-empty.
 
 ---
 
+## Deployment Spectrum: How Facts Reach the PDP
+
+Once a signed token is verified, the signature disappears. What
+remains is just facts in a Datalog database. The authorization
+decision is always the same: evaluate facts, run the join, yes or no.
+
+This means the signed capability token is one delivery mechanism
+for getting facts into the database — not the only one:
+
+```
+Capability tokens:     facts travel WITH the request
+Central PDP service:   facts are ALREADY THERE when the request arrives
+Hybrid:                some facts travel, some are pre-loaded
+```
+
+All three converge to the same place: a Datalog DB with facts from
+multiple sources, a query, and a decision. The authorization model
+is identical — only the fact delivery mechanism differs.
+
+### When tokens shine
+
+- **PDP co-located with resource** — no network call for authZ,
+  the facts arrive with the request
+- **Cross-organizational boundaries** — fact source and PDP don't
+  share infrastructure, signed tokens carry trust across the gap
+- **Offline/disconnected operation** — the request carries its own
+  proof, no need to phone home
+- **Delegation chains** — intermediate parties can attenuate
+  (narrow) the facts without contacting the original authority
+
+### When a central PDP shines
+
+- **Single network** — everything can reach the PDP, no need to
+  carry facts around
+- **Frequently changing facts** — role changes, revocations,
+  dynamic policy updates take effect immediately
+- **Single audit point** — every decision logged in one place
+- **Simpler deployment** — fewer moving parts, easier to reason about
+
+### The hybrid (what most real systems become)
+
+In practice, systems often combine both:
+
+- **Long-lived facts pre-loaded** at the PDP: role mappings,
+  transport bindings, resource registrations, roster membership
+- **Short-lived facts delivered per-request** via capability tokens:
+  specific grants, time-limited permissions, agent key bindings
+
+The PEP at the resource calls `sw/evaluate` with facts from both
+sources — the pre-loaded database and the incoming token. The
+Datalog engine doesn't distinguish between them. A fact is a fact
+regardless of how it arrived.
+
+### The point
+
+The authorization model does not change between these deployment
+choices. Same facts, same rules, same Datalog evaluation, same
+`sw/evaluate` call. Choosing between tokens, a central PDP, or a
+hybrid is a deployment decision — driven by network topology,
+latency requirements, and operational simplicity — not an
+architecture change.
+
+Separate the authorization model from the fact delivery mechanism,
+and the deployment becomes a configuration choice. Simple is better.
+
+---
+
 *Document status: design rationale.*
 *Last updated: March 2026.*
 *Related: `docs/websocket-rpc-enforcement.md`,
