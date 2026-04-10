@@ -238,6 +238,88 @@ assertion schema does. That's why it's implementable.
 
 ---
 
+## Inline Assertions: Flatten, Don't Nest
+
+The original proposal wraps the statement as a nested vector:
+
+```clojure
+[sayer ts nb na :capability id [:capability "alice" :read "/data"]]
+;;                              ^--- nested, redundant :capability
+```
+
+Better: flatten the statement inline. The assertion type at position 5
+already discriminates; repeating it inside a nested vector is redundant:
+
+```clojure
+[sayer ts nb na :capability id "alice" :read "/data"]
+;;                                ^--- inline, positions 6+ are type-specific
+```
+
+The engine handles this naturally — unification matches by position
+and requires same-length tuples. Different assertion types have
+different arities, and the type keyword at position 5 ensures rules
+only match facts of the right shape:
+
+```
+Position:  0      1   2   3   4              5    6+
+           sayer  ts  nb  na  assertion-type id   <type-specific>
+           ─────────────────────────────────────  ──────────────
+           standard metadata envelope             varies by type
+
+:capability    → [... :capability id subject action resource]      9 elements
+:name-binding  → [... :name-binding id subject name]               8 elements
+:revocation    → [... :revocation id target-type target-id]        8 elements
+:delegation    → [... :delegation id delegate-key scope]           8 elements
+```
+
+This is how traditional Datalog predicates work:
+`capability(alice, read, "/data")` has arity 3,
+`name_binding(alice, "ops-team")` has arity 2. Different predicates,
+different arities, same engine.
+
+### Templates hide positional complexity from policy authors
+
+The query author must know the positional schema to write raw
+patterns — that's inherent in any positional data model. But
+templates absorb that knowledge:
+
+```clojure
+;; Templates: executable schema documentation
+;; Position 0-5 metadata is matched but not exposed
+{:id :tmpl/capability
+ :head [:can ?s ?a ?r]
+ :body [[?_ ?_ ?_ ?_ :capability ?_ ?s ?a ?r]]}
+
+{:id :tmpl/name-binding
+ :head [:named ?k ?n]
+ :body [[?_ ?_ ?_ ?_ :name-binding ?_ ?k ?n]]}
+
+{:id :tmpl/revoke-assertion
+ :head [:revoked ?id]
+ :body [[?_ ?_ ?_ ?_ :revocation ?_ ?id]]}
+```
+
+Policy authors compose against the template-derived facts using
+clean, named predicates. They never see raw positions:
+
+```clojure
+;; Policy: clean joins on template outputs
+{:id   :authorized
+ :head [:authorized ?key ?action ?resource]
+ :body [[:named ?key ?subject]
+        [:can ?subject ?action ?resource]]}
+
+{:kind :allow
+ :query [[:authorized agent-pk :read "/data"]]}
+```
+
+The positional complexity is encapsulated in the templates. The
+policy logic is readable, auditable, and independent of the
+underlying tuple layout. The engine processes both layers
+identically — it's all just pattern matching.
+
+---
+
 ## Concrete Recommendation
 
 ### What to build (incremental, on v0.10.2)
