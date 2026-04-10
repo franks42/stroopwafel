@@ -94,14 +94,16 @@
   (set/subset? fact-origin trusted))
 
 (defn facts-for-scope
-  "Returns a sequence of `[origin fact]` pairs visible in the given scope.
+  "Returns a vector of `[origin fact]` pairs visible in the given scope.
 
    Filters the store to only include facts whose origin sets are subsets
-   of the trusted set."
+   of the trusted set. Uses transducer to avoid intermediate seq allocation."
   [store trusted]
-  (for [[fact origin] store
-        :when (visible? origin trusted)]
-    [origin fact]))
+  (into []
+        (keep (fn [[fact origin]]
+                (when (visible? origin trusted)
+                  [origin fact])))
+        store))
 
 (defn unify*
   "Pure structural pattern matching — no origin or proof tracking.
@@ -155,6 +157,17 @@
                   :origin fact-origin})
          (assoc :origin fact-origin)))))
 
+(defn- normalize-facts
+  "Normalize facts: bare facts become [#{0} fact] pairs.
+   Already-normalized pairs (vector of [set fact]) pass through."
+  [facts]
+  (into []
+        (map (fn [f]
+               (if (and (vector? f) (= 2 (count f)) (set? (first f)))
+                 f
+                 [#{0} f])))
+        facts))
+
 (defn eval-body
   "Evaluates a rule or query body against a set of facts.
 
@@ -165,19 +178,14 @@
      - a sequence of bare facts (backward compatible)
      - a sequence of `[origin fact]` pairs (origin-aware)
 
-   Returns a sequence of states, where each state contains:
+   Returns a lazy sequence of states, where each state contains:
    |||
    |:-|:-|
    | `:env`    | the combined variable bindings
    | `:proof`  | all facts that contributed to satisfying the body
    | `:origin` | accumulated origin set (union of matched fact origins)"
   [body facts]
-  (let [;; Normalize: bare facts become [#{0} fact] pairs
-        origin-facts (mapv (fn [f]
-                             (if (and (vector? f) (= 2 (count f)) (set? (first f)))
-                               f
-                               [#{0} f]))
-                           facts)]
+  (let [origin-facts (normalize-facts facts)]
     (reduce
      (fn [states pattern]
        (for [state states
@@ -366,7 +374,9 @@
    that scope instead of the default `(trusted-origins :authorizer)`.
    This extends authorizer visibility to trusted third-party blocks.
 
-   Runs until no new facts are produced or limits are reached."
+   Runs until no new facts are produced or limits are reached.
+   Uses transduce over derived facts to avoid materializing
+   intermediate sequences."
   [indexed-rules store & {:keys [authorizer-scope]}]
   (loop [store store
          iteration 0]
@@ -381,18 +391,32 @@
                      visible (facts-for-scope acc trusted)]
                  (reduce
                   (fn [s rule]
-                    (let [derived (fire-rule rule visible block-idx)]
-                      (reduce (fn [s2 {:keys [fact origin]}]
-                                (if (contains? s2 fact)
-                                  s2
-                                  (insert-fact s2 fact origin)))
-                              s derived)))
+                    (transduce
+                     (keep (fn [{:keys [fact origin]}]
+                             (when-not (contains? s fact)
+                               [fact origin])))
+                     (completing
+                      (fn [s2 [fact origin]]
+                        (insert-fact s2 fact origin)))
+                     s
+                     (fire-rule rule visible block-idx)))
                   acc rules)))
              store indexed-rules)]
         (if (or (= (fact-count new-store) (fact-count store))
                 (>= (fact-count new-store) max-facts))
           new-store
           (recur new-store (inc iteration)))))))
+
+(defn- scope-visible-facts
+  "Build scoped [origin fact] pairs and a fact→origin lookup map.
+   When scope is nil, uses all facts in the store."
+  [fact-store scope]
+  (if scope
+    (let [pairs (facts-for-scope fact-store scope)]
+      {:origin-facts pairs
+       :fact-lookup  (into {} (map (fn [[origin fact]] [fact origin])) pairs)})
+    {:origin-facts (into [] (map (fn [[fact origin]] [origin fact])) fact-store)
+     :fact-lookup  fact-store}))
 
 (defn eval-check
   "Evaluates a single authorization check against a fact store.
@@ -402,23 +426,23 @@
 
    Supports `:kind`:
      - `:one` (default, check-if): passes if >= 1 match
-     - `:reject` (reject-if / deny): passes if NO match"
+     - `:reject` (reject-if / deny): passes if NO match
+
+   Uses early termination: for check-if, stops at first match.
+   For reject-if, stops at first match (which means failure)."
   ([check fact-store]
    (eval-check check fact-store nil))
   ([{:keys [id query kind] guards :when} fact-store scope]
-   (let [visible (if scope
-                   (reduce (fn [m [origin fact]] (assoc m fact origin))
-                           {}
-                           (facts-for-scope fact-store scope))
-                   fact-store)
-         origin-facts (for [[fact origin] visible]
-                        [origin fact])
-         results (filter (fn [{:keys [env]}] (eval-when guards env))
-                         (eval-body query origin-facts))
+   (let [{:keys [origin-facts fact-lookup]} (scope-visible-facts fact-store scope)
+         ;; Lazy seq — only realize what we need
+         matches (cond->> (eval-body query origin-facts)
+                   guards (filter (fn [{:keys [env]}] (eval-when guards env))))
+         ;; Early termination: just check first match
+         first-match (first matches)
          reject? (= kind :reject)]
      (cond
        ;; reject-if: match means FAIL
-       (and reject? (seq results))
+       (and reject? first-match)
        {:result  :fail
         :explain {:type     :check
                   :check-id id
@@ -426,7 +450,7 @@
                   :rejected query}}
 
        ;; reject-if: no match means PASS
-       (and reject? (empty? results))
+       (and reject? (nil? first-match))
        {:result  :pass
         :explain {:type     :check
                   :check-id id
@@ -434,15 +458,14 @@
                   :because  {:origin :reject-pass}}}
 
        ;; check-if: match means PASS
-       (seq results)
-       (let [binding (first results)
-             fact    (instantiate (first query) (:env binding))
-             explain (get visible fact)]
+       first-match
+       (let [fact    (instantiate (first query) (:env first-match))
+             explain (get fact-lookup fact)]
          {:result  :pass
           :explain {:type     :check
                     :check-id id
                     :result   :pass
-                    :because  (or explain {:origin (:origin binding)
+                    :because  (or explain {:origin (:origin first-match)
                                            :fact   fact})}})
 
        ;; check-if: no match means FAIL
@@ -462,16 +485,14 @@
 
    Returns:
      - `{:matched? true :kind :allow/:deny}` if the query matches
-     - `{:matched? false}` if the query does not match"
+     - `{:matched? false}` if the query does not match
+
+   Uses early termination — stops at first match."
   [{:keys [kind query] guards :when} fact-store scope]
-  (let [visible (reduce (fn [m [origin fact]] (assoc m fact origin))
-                        {}
-                        (facts-for-scope fact-store scope))
-        origin-facts (for [[fact origin] visible]
-                       [origin fact])
-        results (filter (fn [{:keys [env]}] (eval-when guards env))
-                        (eval-body query origin-facts))]
-    (if (seq results)
+  (let [{:keys [origin-facts]} (scope-visible-facts fact-store scope)
+        matches (cond->> (eval-body query origin-facts)
+                  guards (filter (fn [{:keys [env]}] (eval-when guards env))))]
+    (if (first matches)
       {:matched? true :kind kind}
       {:matched? false})))
 
