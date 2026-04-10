@@ -440,6 +440,185 @@ authorization needs signatures, scope isolation, and decisions.
 
 ---
 
+## Lineage: KEX → Stroopwafel → Biscuit
+
+Stroopwafel's engine descends from KEX (a ~470-line Clojure
+proof-of-concept by Seref Ayar) and targets feature parity with
+Biscuit (the reference implementation in Rust/Java). Here is how
+the three engines compare structurally:
+
+### KEX (205 lines) — the starting point
+
+- Single-pass rule firing — rules don't chain transitively
+- No scope isolation — all facts visible to all rules and checks
+- No expressions — pure pattern matching only, no `:when` guards
+- No policies — checks only, check-if semantics only
+- No byte-array-aware comparison — uses Clojure's `=` (identity)
+- Minimal origin tracking — just `:authority` or `:derived`
+
+### Stroopwafel (594 lines) — what we added
+
+- **Fixpoint iteration** — rules fire repeatedly until no new facts
+  (max 100 iterations, 1000 facts). Transitive delegation chains
+  resolve naturally.
+- **Full scope isolation** — origin sets per fact, per-block
+  visibility, trusted-origins filtering. The attenuation guarantee:
+  block N sees `#{0 N :authorizer}`, nothing else.
+- **Expression guards** — `:when` with ~35 whitelisted functions.
+  No eval, no resolve — security-bounded.
+- **Computed bindings** — `:let` for intermediate variables.
+- **Policies** — ordered allow/deny with closed-world default.
+  Separate from checks. First match wins.
+- **Reject-if checks** — inverted match semantics for deny rules.
+- **Byte-array-aware unification** — `value=` uses
+  `java.util.Arrays/equals`. Critical for cryptographic key
+  comparison in authorization facts.
+- **Trusted third-party scope extension** — authorizer can extend
+  visibility to specific third-party block indices.
+
+### Biscuit (3,096 lines, Java) — the reference
+
+- Same fixpoint + scope model as stroopwafel
+- **Lazy stream-based evaluation** — `Combinator` implements
+  `Iterator<Pair<Origin, Map<Long, Term>>>` for memory-bounded
+  left-to-right predicate matching. Handles large fact sets
+  without materializing full cross-products.
+- **Result monad** error handling (vs our exceptions)
+- **Typed term system** — 9 types (integer, string, bytes, date,
+  boolean, set, array, map, null) with per-type operations
+- **`ALL` check variant** — universal quantification (pass only
+  if all candidates match). Stroopwafel has check-if and reject-if
+  but not all-must-match.
+- **No policies** — checks are the final gate. Stroopwafel added
+  the policy layer on top.
+- **Protobuf serialization** — binary wire format (vs CEDN)
+- **Rule scope decorators** — `Authority`, `Previous`, `PublicKey`
+  scope annotations per rule, computed into `TrustedOrigins` at
+  runtime
+
+### Divergence summary
+
+| Decision | Stroopwafel | Biscuit | Rationale |
+|---|---|---|---|
+| Policies | Yes (allow/deny) | No (checks only) | Need a final decision gate |
+| Typed terms | No (Clojure values) | Yes (9 types) | Runtime types sufficient, schema-less is simpler |
+| Serialization | CEDN | Protobuf | Canonical by design, no base64 |
+| Lazy evaluation | No (eager) | Yes (streams) | Fact sets are tiny (<50), lazy overhead not worth it *yet* |
+| Universal checks | No | Yes (`ALL`) | Not needed yet — could add |
+| Error handling | Exceptions | Result monad | Clojure idiom vs Java idiom |
+
+### What's identical across all three
+
+The core semantics are shared:
+
+- Pattern matching via positional unification
+- Facts as flat tuples with a predicate name
+- Rules derive new facts from existing ones
+- Closed-world assumption (missing = false)
+- Variables as `?`-prefixed symbols (KEX/stroopwafel) or
+  `$`-prefixed indices (Biscuit)
+
+Stroopwafel is essentially Biscuit's evaluator compressed into
+idiomatic Clojure, with policies added and typed terms removed.
+The deviation from KEX is substantial — we kept the namespace
+and basic `unify`/`fire-rule` structure but rewrote almost
+everything else for scope isolation and fixpoint.
+
+---
+
+## TODO: Engine Optimizations
+
+The current engine is correct and fast for small fact sets (<50
+facts, typical for per-request authorization). For larger
+deployments (central PDP with organizational hierarchies,
+WebSocket RPC with hundreds of function permissions), the
+following optimizations would reduce memory allocation and
+improve throughput:
+
+### 1. Transducers in `facts-for-scope`
+
+Called on every rule firing during every fixpoint iteration.
+Currently allocates a lazy seq per call.
+
+```clojure
+;; Current: lazy seq (allocates thunks)
+(for [[fact origin] store
+      :when (visible? origin trusted)]
+  [origin fact])
+
+;; Optimized: transducer (no intermediate allocation)
+(into []
+      (keep (fn [[fact origin]]
+              (when (visible? origin trusted)
+                [origin fact])))
+      store)
+```
+
+### 2. Transducers in `apply-rules-scoped`
+
+The fixpoint loop's inner reduce. Each iteration filters facts
+per scope, fires rules, and collects new facts. Transducers
+would eliminate intermediate seq allocations across the full
+iteration.
+
+```clojure
+;; In the inner rule-firing loop, replace:
+(let [derived (fire-rule rule visible block-idx)]
+  (reduce (fn [s2 {:keys [fact origin]}] ...)
+          s derived))
+
+;; With a transducing approach that avoids materializing
+;; the full derived seq before reducing into the store.
+```
+
+### 3. Early termination in `eval-check`
+
+For `:one` checks (pass on first match), stop after the first
+successful unification instead of evaluating all candidates:
+
+```clojure
+;; Current: evaluates all, takes first
+(let [results (filter ... (eval-body query origin-facts))]
+  (if (seq results) ...))
+
+;; Optimized: stop at first match
+(let [first-match (first (filter ... (eval-body query origin-facts)))]
+  (if first-match ...))
+```
+
+Note: `eval-body` already returns a lazy seq from `for`, so
+`first` would only realize one match. But the intermediate
+`filter` and `eval-when` may still realize more than needed.
+Wrapping in a `reduce` with `reduced` would guarantee early
+exit.
+
+### 4. Leave `eval-body` lazy
+
+The cross-product in `eval-body` (states × facts per pattern)
+is already lazy via `for`. This is correct — most candidates
+fail unification, and laziness avoids materializing the full
+cross-product. Do not convert this to eager/transducer form.
+
+### 5. Consider: indexed fact lookup
+
+For large fact sets (>500 facts), linear scan in `eval-body`
+becomes the bottleneck. An index on the first element of each
+fact (the predicate name) would turn O(facts) into O(facts
+with matching predicate):
+
+```clojure
+;; Indexed store: {predicate-keyword → [{fact origin} ...]}
+;; Lookup: only scan facts matching the pattern's first element
+```
+
+This is what Datascript's EAVT/AEVT indexes do for EAV triples.
+For flat predicates, indexing on position 0 (the predicate name)
+captures most of the benefit with minimal complexity.
+
+Not needed until fact sets routinely exceed a few hundred entries.
+
+---
+
 *Document status: conceptual guide.*
 *Last updated: April 2026.*
 *Related: `docs/datalog-as-authorization-join.md`,
