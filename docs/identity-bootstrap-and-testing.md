@@ -224,6 +224,77 @@ architecture change.
 
 ---
 
+## Every Trust Boundary: Evaluate Then Act
+
+Every node in the delegation chain does the same two things:
+
+1. **Evaluate** — am I permitted to do what's being asked? (`sw/evaluate`)
+2. **Act** — issue a token (`sw/issue`) or serve the request (handler)
+
+```
+Root Authority          Intermediate Issuer       Resource Proxy
+══════════════          ══════════════════        ══════════════
+
+PDP: "may I             PDP: "may I               PDP: "may this
+ delegate to             issue this                request access
+ this issuer?"           to this agent?"           this resource?"
+      │                       │                         │
+      ▼                       ▼                         ▼
+sw/issue                 sw/issue                  sw/evaluate
+ → delegation token       → capability token        → allow/deny
+```
+
+The PDP is the same embedded engine everywhere — 594 lines, same
+code, different policy facts at each node. Any process with a
+signing key and a policy can issue tokens: a proxy could issue
+session tokens, an agent could sub-delegate to a tool, a browser
+could delegate to an ephemeral key.
+
+### Context narrows at every step
+
+Each node knows less about the world than its parent. The root
+authority knows the full organizational policy — who exists, what
+roles they have, what resources exist. The intermediate issuer
+knows only its delegated slice. The proxy knows only the token
+facts presented to it plus its own trust roots. The resource
+handler knows the least — just "is this specific request permitted?"
+
+The token carries just enough for the next boundary to decide,
+nothing more. The proxy doesn't need to know the org chart. The
+resource doesn't need to know the delegation chain. They just
+evaluate the facts in front of them.
+
+This is attenuation as information loss — each delegation step
+forgets what it doesn't need to pass on. The security property
+and the simplicity property are the same thing.
+
+### Temporal attenuation: lifetime narrows with scope
+
+```
+Root policy:        valid 1 year     "ops-team may restart services"
+Delegation token:   valid 1 week     "alice (ops-team) may restart /api/*"
+Session capability: valid 30 min     "alice may restart /api/service"
+Request envelope:   valid 2 min      "this specific restart request, now"
+```
+
+Each step folds the expected processing time over the capability.
+The root doesn't know when alice will work. The issuer knows her
+shift. The session knows she's logged in. The request knows it
+should complete in seconds.
+
+Because `not-after` can only narrow (attenuation guarantee),
+nobody in the chain can extend what was granted above them.
+Alice's session can't outlive her delegation. Her request can't
+outlive her session.
+
+This is also the operational safety net. A compromised session
+token that expires in 30 minutes limits the blast radius in time,
+not just in scope. You don't need to detect and revoke — you just
+wait. The tighter the lifetime at the leaf, the less damage a
+compromise can do.
+
+---
+
 ## Summary
 
 | Environment | Identity = | sk location | Bootstrap |
@@ -239,7 +310,7 @@ infrastructure that already exists IS the identity infrastructure.
 ---
 
 *Document status: design reference.*
-*Last updated: March 2026.*
+*Last updated: April 2026.*
 *Related: `docs/datalog-as-authorization-join.md`,
 `docs/websocket-rpc-enforcement.md`,
 `docs/dual-pep-client-server-enforcement.md` (in alpaca-clj)*
