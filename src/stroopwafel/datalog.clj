@@ -424,21 +424,26 @@
    Accepts an optional `scope` (trusted origins set) to filter which
    facts are visible. When scope is nil, all facts in the store are used.
 
+   Accepts an optional `explain?` flag. When true, realizes all matches
+   and includes them in the explain output for audit/debug visibility.
+   When false (default), uses early termination for performance.
+
    Supports `:kind`:
      - `:one` (default, check-if): passes if >= 1 match
-     - `:reject` (reject-if / deny): passes if NO match
-
-   Uses early termination: for check-if, stops at first match.
-   For reject-if, stops at first match (which means failure)."
+     - `:reject` (reject-if / deny): passes if NO match"
   ([check fact-store]
-   (eval-check check fact-store nil))
-  ([{:keys [id query kind] guards :when} fact-store scope]
+   (eval-check check fact-store nil false))
+  ([check fact-store scope]
+   (eval-check check fact-store scope false))
+  ([{:keys [id query kind] guards :when} fact-store scope explain?]
    (let [{:keys [origin-facts fact-lookup]} (scope-visible-facts fact-store scope)
          ;; Lazy seq — only realize what we need
          matches (cond->> (eval-body query origin-facts)
                    guards (filter (fn [{:keys [env]}] (eval-when guards env))))
-         ;; Early termination: just check first match
-         first-match (first matches)
+         ;; In explain mode, realize all matches for audit visibility
+         ;; Otherwise, early termination via first
+         all-matches (when explain? (doall matches))
+         first-match (if explain? (first all-matches) (first matches))
          reject? (= kind :reject)]
      (cond
        ;; reject-if: match means FAIL
@@ -462,11 +467,18 @@
        (let [fact    (instantiate (first query) (:env first-match))
              explain (get fact-lookup fact)]
          {:result  :pass
-          :explain {:type     :check
-                    :check-id id
-                    :result   :pass
-                    :because  (or explain {:origin (:origin first-match)
-                                           :fact   fact})}})
+          :explain (cond-> {:type     :check
+                            :check-id id
+                            :result   :pass
+                            :because  (or explain {:origin (:origin first-match)
+                                                   :fact   fact})}
+                     ;; In explain mode, include all solutions
+                     all-matches
+                     (assoc :all-matches
+                            (mapv (fn [{:keys [env origin]}]
+                                    {:env env :origin origin
+                                     :fact (instantiate (first query) env)})
+                                  all-matches)))})
 
        ;; check-if: no match means FAIL
        :else
@@ -516,11 +528,14 @@
         {:result :deny}))))
 
 (defn eval-checks
-  "Evaluates all checks on the fact store with optional scope filtering."
+  "Evaluates all checks on the fact store with optional scope filtering.
+   When explain? is true, all matches are realized for audit visibility."
   ([checks store]
-   (map (fn [c] (eval-check c store)) checks))
+   (map (fn [c] (eval-check c store nil false)) checks))
   ([checks store scope]
-   (map (fn [c] (eval-check c store scope)) checks)))
+   (map (fn [c] (eval-check c store scope false)) checks))
+  ([checks store scope explain?]
+   (map (fn [c] (eval-check c store scope explain?)) checks)))
 
 (defn eval-token
   "Evaluates an authorization token with per-block scope isolation.
@@ -581,7 +596,7 @@
          (fn [idx]
            (let [block (nth blocks idx)
                  scope (trusted-origins idx)]
-             (eval-checks (:checks block) store scope)))
+             (eval-checks (:checks block) store scope explain?)))
          (range (count blocks)))
 
         ;; 6. Evaluate authorizer checks (with extended scope if trusted blocks)
@@ -589,7 +604,7 @@
 
         authorizer-results
         (when (:checks authorizer)
-          (eval-checks (:checks authorizer) store auth-scope))
+          (eval-checks (:checks authorizer) store auth-scope explain?))
 
         all-results (concat block-results authorizer-results)
         failed (first (filter #(= :fail (:result %)) all-results))
