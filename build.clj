@@ -10,9 +10,9 @@
             [deps-deploy.deps-deploy :as dd]))
 
 (def lib 'com.github.franks42/stroopwafel)
-(def version "0.10.2")
+(def version "0.11.0")
 (def class-dir "target/classes")
-(def jar-file "target/stroopwafel.jar")
+(def jar-file (format "target/%s-%s.jar" (name lib) version))
 (def basis (delay (b/create-basis {:project "deps.edn" :root nil})))
 
 (defn clean [_]
@@ -35,7 +35,7 @@
                 :version version
                 :basis @basis
                 :src-dirs ["src"]
-                :pom-data [[:description "Capability-based authorization tokens for Clojure — Ed25519 signed block chains with Datalog authorization"]
+                :pom-data [[:description "Pure Datalog engine for authorization decisions — zero external dependencies. See signet (crypto) and stroopwafel-pdp (bridge) for the full stack."]
                            [:url "https://github.com/franks42/stroopwafel"]
                            [:licenses
                             [:license
