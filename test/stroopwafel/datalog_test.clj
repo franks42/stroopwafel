@@ -506,8 +506,9 @@
                                               :query [[:b 1]]}]})]
       (t/is (not (:valid? result))))))
 
-(t/deftest fact-explosion-capped
-  (t/testing "Unbounded rule generation stops at max-facts limit"
+(t/deftest fact-explosion-fails-closed
+  (t/testing "Unbounded rule generation stops at a limit and denies, even
+              for a query that matched before the limit"
     (let [token {:blocks [{:facts [[:n 1]]
                            :rules '[{:id   :grow
                                      :head [:n ?next]
@@ -523,8 +524,92 @@
                                       :authorizer
                                       {:policies [{:kind :allow
                                                    :query [[:n 1500]]}]})]
-      (t/is (:valid? result-low))
-      (t/is (not (:valid? result-high))))))
+      (t/is (false? (:valid? result-low)))
+      (t/is (= :limit-exceeded (-> result-low :error :type)))
+      (t/is (false? (:valid? result-high))))))
+
+;; --- Fixpoint limits fail closed ---
+;; A fixpoint cut short leaves derived facts missing. A :reject check or a
+;; :deny policy over a missing fact would then pass, so reaching a limit
+;; must deny, never evaluate the partial store.
+
+(defn- chain-token
+  "Edges 0→1→…→n and a transitive :reach rule: n(n+1)/2 derived facts,
+   n iterations."
+  [n checks]
+  {:blocks [{:facts  (mapv (fn [i] [:edge i (inc i)]) (range n))
+             :rules  '[{:id :reach-1 :head [:reach ?a ?b] :body [[:edge ?a ?b]]}
+                       {:id   :reach-n
+                        :head [:reach ?a ?c]
+                        :body [[:reach ?a ?b] [:edge ?b ?c]]}]
+             :checks checks}]})
+
+(defn- deny-reach [n]
+  {:policies [{:kind :deny :query [[:reach 0 n]]}
+              {:kind :allow :query [[:edge 0 1]]}]})
+
+(t/deftest deny-policy-fails-closed-at-fact-limit
+  (t/testing "under the fact limit, the deny policy matches"
+    (t/is (false? (:valid? (sut/eval-token (chain-token 40 [])
+                                           :authorizer (deny-reach 40))))))
+  (t/testing "over the fact limit, the deny fact is never derived; deny anyway"
+    (let [result (sut/eval-token (chain-token 50 [])
+                                 :authorizer (deny-reach 50))]
+      (t/is (false? (:valid? result)))
+      (t/is (= {:type :limit-exceeded :limit :max-facts :max 1000}
+               (select-keys (:error result) [:type :limit :max]))))))
+
+(t/deftest reject-check-fails-closed-at-fact-limit
+  (let [result (sut/eval-token
+                (chain-token 50 [{:id :no-far :kind :reject :query [[:reach 0 50]]}]))]
+    (t/is (false? (:valid? result)))
+    (t/is (= :max-facts (-> result :error :limit)))))
+
+(t/deftest fails-closed-at-iteration-limit
+  (t/testing "a long chain from one start: few facts, more than 100 iterations"
+    (let [token  {:blocks [{:facts (into [[:reachable 0 0]]
+                                         (map (fn [i] [:edge i (inc i)]))
+                                         (range 150))
+                            :rules '[{:id   :trans
+                                      :head [:reachable ?a ?c]
+                                      :body [[:reachable ?a ?b] [:edge ?b ?c]]}]}]}
+          result (sut/eval-token token
+                                 :authorizer
+                                 {:policies [{:kind :deny :query [[:reachable 0 150]]}
+                                             {:kind :allow :query [[:reachable 0 1]]}]})]
+      (t/is (false? (:valid? result)))
+      (t/is (= {:type :limit-exceeded :limit :max-iterations :max 100}
+               (select-keys (:error result) [:type :limit :max]))))))
+
+(t/deftest limits-are-configurable
+  (t/testing "raised limits let the 50-chain reach its fixpoint"
+    (let [limits {:max-facts 5000}]
+      (t/is (= {:valid? false}
+               (sut/eval-token (chain-token 50 []) :authorizer (deny-reach 50)
+                               :limits limits))
+            "the deny policy matches; no limit error")
+      (t/is (= {:valid? true}
+               (sut/eval-token (chain-token 50 [])
+                               :authorizer {:policies [{:kind :allow :query [[:reach 0 50]]}]}
+                               :limits limits)))))
+  (t/testing "lowered limits deny a small evaluation"
+    (t/is (= :max-iterations
+             (-> (sut/eval-token (chain-token 5 [])
+                                 :authorizer {:policies [{:kind :allow :query [[:edge 0 1]]}]}
+                                 :limits {:max-iterations 2})
+                 :error :limit))))
+  (t/testing "a fixpoint reached exactly at the limits is not an error"
+    ;; chain of 5: 5 edges + 15 reach facts = 20; 5 rounds that add facts
+    ;; plus one that adds none
+    (t/is (= {:valid? true}
+             (sut/eval-token (chain-token 5 [])
+                             :authorizer {:policies [{:kind :allow :query [[:reach 0 5]]}]}
+                             :limits {:max-facts 20 :max-iterations 6}))))
+  (t/testing "limits must be positive integers"
+    (t/is (thrown-with-msg? clojure.lang.ExceptionInfo #"limits"
+                            (sut/eval-token (chain-token 5 []) :limits {:max-facts 0})))
+    (t/is (thrown-with-msg? clojure.lang.ExceptionInfo #"limits"
+                            (sut/eval-token (chain-token 5 []) :limits {:max-fact 10})))))
 
 (t/deftest self-referential-rule-terminates
   (t/testing "Rule that derives its own input terminates after one round"

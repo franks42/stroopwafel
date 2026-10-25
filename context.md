@@ -1,6 +1,6 @@
 # Stroopwafel: context
 
-## What this is (0.11.0)
+## What this is (0.12.0)
 
 Stroopwafel is a pure Datalog engine for authorization decisions. Facts,
 rules, checks and policies go in; `{:valid? …}` comes out. It has no
@@ -41,7 +41,11 @@ input.
    :authorizer}`. This is Biscuit's guarantee: later blocks can restrict
    authority but never expand it.
 2. **Rules** run to a fixpoint, so recursion and transitive closure work.
-   The limits are 100 iterations and 1000 facts (see "Known issues").
+   `:limits` (default `{:max-iterations 100 :max-facts 1000}`) bound it.
+   Reaching a limit first throws inside `apply-rules-scoped`, and
+   `eval-token` turns that into `{:valid? false :error {:type
+   :limit-exceeded …}}`: a partial store is never evaluated, because a
+   reject check or deny policy over a missing derived fact would pass.
 3. **Checks.** `:one` (the default, check-if) passes on a match. `:reject`
    (reject-if) passes when there is no match. Rule bodies have no
    negation; negative constraints are expressed as reject checks and deny
@@ -81,15 +85,19 @@ code yet.
 
 ## Known issues and open work
 
-- **The fixpoint limit fails open.** When rule evaluation reaches 100
-  iterations or 1000 facts it stops silently. Facts derived after the
-  limit are missing, so `:reject` checks and `:deny` policies over them
-  pass. This was reproduced on 2026-10-25: transitive closure over a
-  50-edge chain allowed where the 40-edge chain denied. The existing test
-  `fact-explosion-capped` expects the truncated store to still allow
-  `[:n 100]`. A fail-closed fix changes that expectation on purpose.
-  Needed: `{:valid? false}` with a reason when a limit is reached, and
-  configurable limits.
+- **Fixed in 0.12.0 (2026-10-25): the fixpoint limit failed open.**
+  Up to 0.11.0, evaluation stopped silently at 100 iterations or 1000
+  facts and evaluated the partial store, so `:reject` checks and `:deny`
+  policies over missing derived facts passed. It was reproduced with
+  transitive closure over 50 edges (facts) and 150 edges (iterations).
+  Now a limit denies with `:error`, and limits are configurable.
+  Tests: `deny-policy-fails-closed-at-fact-limit`,
+  `reject-check-fails-closed-at-fact-limit`,
+  `fails-closed-at-iteration-limit`, `limits-are-configurable`,
+  `evaluate-fails-closed-at-a-limit`. `fact-explosion-capped` became
+  `fact-explosion-fails-closed`: it expected the truncated store to still
+  allow `[:n 100]`. stroopwafel-pdp maps the result to `{:allowed?
+  false}` but doesn't pass `:error` on yet.
 - **Key cards and self-scoped assertions** (from signet docs/14, "Key
   cards", and signet `docs/tutorial/TODO.md`):
   - admit statements a key makes about itself without trust;
@@ -119,6 +127,7 @@ code yet.
 | 0.10.0 | signed envelopes, PEP pipeline, replay guard, trust-root facts, SSH key import (from alpaca-clj) |
 | 0.10.2 | blocks as unified signed envelopes |
 | 0.11.0 | stripped to the pure engine; everything else moved to signet and stroopwafel-pdp; 66 tests |
+| 0.12.0 | fixpoint limits fail closed (deny with `:error`) and are configurable (`:limits`); 71 tests |
 
 ## Lineage
 

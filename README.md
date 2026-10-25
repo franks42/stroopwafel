@@ -51,7 +51,7 @@ Like a stroopwafel: two layers with something sealed between them.
 - **Facts** are vectors, for example `[:right "alice" :read "/api/data"]`.
 - **Rules** derive facts: `{:id :head [...] :body [[...] ...]}`, with
   optional `:when` guards and `:let` bindings. Rules run to a fixpoint,
-  so recursive rules (transitive closure) work, within the limits below.
+  so recursive rules (transitive closure) work, within limits (below).
 - **Checks** must all pass. `{:id :query [...]}` passes if the query
   matches (check-if). `{:kind :reject ...}` passes if the query does *not*
   match (reject-if).
@@ -74,17 +74,30 @@ Like a stroopwafel: two layers with something sealed between them.
 - **Explain.** `:explain? true` returns a proof tree, and `sw/graph` turns
   it into nodes and edges.
 
-## Known issue: the fixpoint limit can fail open
+## Limits fail closed
 
-Rule evaluation stops at 100 iterations or 1000 facts, and it stops
-**silently**. Facts that would have been derived after the limit are
-missing, so a `:reject` check or a `:deny` policy that depends on them
-*passes*. This was reproduced on 2026-10-25 with a transitive-closure
-rule over a chain of 50 edges, which derives more than 1000 facts: both
-the deny policy and the reject check allowed. The same rules over 40
-edges denied correctly. The fix is to fail closed when a limit is reached
-(`{:valid? false}` with a reason) and to make the limits configurable.
-Until then, keep rule sets and fact counts well below the limits.
+Rule evaluation is bounded: by default 100 rounds and 1000 facts (input
+plus derived). If a limit is reached before the fixpoint, the decision
+is a deny with a reason, and the partial store is never evaluated:
+
+```clojure
+;; chain: 50 edges and a transitive :reach rule (1325 facts at fixpoint);
+;; deny: a :deny policy on [:reach 0 50], then an :allow
+(sw/evaluate chain :authorizer deny)
+;; => {:valid? false
+;;     :error {:type :limit-exceeded :limit :max-facts :max 1000
+;;             :facts 1025 :iterations 26}}
+(sw/evaluate chain :authorizer deny :limits {:max-facts 5000})
+;; => {:valid? false}   ; the fixpoint is reached, and the deny policy matches
+```
+
+A store cut short of its fixpoint is missing derived facts, so a
+`:reject` check or a `:deny` policy over a missing fact would pass. Up to
+0.11.0 that was what happened: evaluation stopped silently at a limit
+and evaluated the partial store. It was reproduced on 2026-10-25 with
+transitive closure over 50 edges (more than 1000 facts) and over 150
+edges (more than 100 rounds); in both cases the deny policy allowed.
+Unknown keys or non-positive values in `:limits` throw.
 
 ## SPKI/SDSI in Datalog
 
@@ -113,11 +126,11 @@ trust (stroopwafel-pdp). The design is in
 
 ```clojure
 ;; deps.edn
-{:deps {com.github.franks42/stroopwafel {:mvn/version "0.11.0"}}}
+{:deps {com.github.franks42/stroopwafel {:mvn/version "0.12.0"}}}
 ```
 
 ```sh
-clojure -X:test        # the test suite (66 tests)
+clojure -X:test        # the test suite
 ```
 
 It also runs on babashka without changes: `bb -cp src`.

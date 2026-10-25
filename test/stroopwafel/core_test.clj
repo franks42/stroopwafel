@@ -331,3 +331,16 @@
                                           :query [[:email "alice" "a@idp-a.com"]
                                                   [:phone "alice" "+1234"]]}]})]
       (t/is (true? (:valid? result))))))
+
+(t/deftest evaluate-fails-closed-at-a-limit
+  (t/testing "evaluate passes :limits through and reports a limit as a deny"
+    (let [token  {:blocks [{:facts (mapv (fn [i] [:edge i (inc i)]) (range 10))
+                            :rules '[{:id :r1 :head [:reach ?a ?b] :body [[:edge ?a ?b]]}
+                                     {:id   :rn
+                                      :head [:reach ?a ?c]
+                                      :body [[:reach ?a ?b] [:edge ?b ?c]]}]}]}
+          policy {:policies [{:kind :allow :query [[:edge 0 1]]}]}]
+      (t/is (= {:valid? true} (sut/evaluate token :authorizer policy)))
+      (let [result (sut/evaluate token :authorizer policy :limits {:max-facts 30})]
+        (t/is (false? (:valid? result)))
+        (t/is (= :max-facts (-> result :error :limit)))))))

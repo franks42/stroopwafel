@@ -355,13 +355,31 @@
   [rules facts]
   (mapcat #(fire-rule % (keys facts)) rules))
 
-(def ^:private max-iterations
-  "Maximum number of fixpoint iterations for rule application."
-  100)
+(def default-limits
+  "Fixpoint limits: `:max-iterations` rounds of rule application, and
+   `:max-facts` facts in the store (input and derived)."
+  {:max-iterations 100
+   :max-facts      1000})
 
-(def ^:private max-facts
-  "Maximum total facts allowed in the store."
-  1000)
+(defn validate-limits
+  "Returns `limits` merged over `default-limits`; throws on unknown keys or
+   values that aren't positive integers, so a typo can't silently keep
+   (or drop) a limit."
+  [limits]
+  (let [unknown (remove (set (keys default-limits)) (keys limits))
+        bad     (remove (fn [[_ v]] (pos-int? v)) limits)]
+    (when (or (seq unknown) (seq bad))
+      (throw (ex-info "Invalid limits: keys must be :max-iterations or :max-facts, values positive integers"
+                      {:limits limits :unknown (vec unknown) :bad (into {} bad)})))
+    (merge default-limits limits)))
+
+(defn- limit-exceeded [limit limits store iterations]
+  (ex-info (str "Fixpoint limit exceeded: " limit)
+           {:stroopwafel/error :limit-exceeded
+            :limit             limit
+            :max               (get limits limit)
+            :facts             (fact-count store)
+            :iterations        iterations}))
 
 (defn apply-rules-scoped
   "Applies rules per-block with scope filtering, running to fixpoint.
@@ -374,14 +392,17 @@
    that scope instead of the default `(trusted-origins :authorizer)`.
    This extends authorizer visibility to trusted third-party blocks.
 
-   Runs until no new facts are produced or limits are reached.
+   Runs until no new facts are produced. If a limit (`:limits`, over
+   `default-limits`) is reached first, throws ex-info with
+   `:stroopwafel/error :limit-exceeded`: a store cut short of its
+   fixpoint lacks derived facts, and a `:reject` check or `:deny` policy
+   over a missing fact would pass, so it must never be evaluated.
    Uses transduce over derived facts to avoid materializing
    intermediate sequences."
-  [indexed-rules store & {:keys [authorizer-scope]}]
-  (loop [store store
-         iteration 0]
-    (if (>= iteration max-iterations)
-      store
+  [indexed-rules store & {:keys [authorizer-scope limits]}]
+  (let [{:keys [max-iterations max-facts] :as limits} (validate-limits limits)]
+    (loop [store store
+           iteration 0]
       (let [new-store
             (reduce
              (fn [acc [block-idx rules]]
@@ -401,11 +422,20 @@
                      s
                      (fire-rule rule visible block-idx)))
                   acc rules)))
-             store indexed-rules)]
-        (if (or (= (fact-count new-store) (fact-count store))
-                (>= (fact-count new-store) max-facts))
+             store indexed-rules)
+            rounds (inc iteration)]
+        (cond
+          (= (fact-count new-store) (fact-count store))
           new-store
-          (recur new-store (inc iteration)))))))
+
+          (> (fact-count new-store) max-facts)
+          (throw (limit-exceeded :max-facts limits new-store rounds))
+
+          (>= rounds max-iterations)
+          (throw (limit-exceeded :max-iterations limits new-store rounds))
+
+          :else
+          (recur new-store rounds))))))
 
 (defn- scope-visible-facts
   "Build scoped [origin fact] pairs and a fact→origin lookup map.
@@ -555,13 +585,17 @@
      - `:checks` — additional authorizer checks
      - `:rules`  — additional authorizer rules
 
+   Accepts optional `:limits` (`:max-iterations`, `:max-facts`) over
+   `default-limits`. Reaching a limit before the fixpoint denies.
+
    Returns:
    |||
    |:-|:-|
    | `:valid?`  | boolean authorization decision
-   | `:explain` | optional proof tree when :explain? is enabled"
+   | `:explain` | optional proof tree when :explain? is enabled
+   | `:error`   | when a limit was reached: `{:type :limit-exceeded :limit :max :facts :iterations}`"
   [{:keys [blocks] :as _token}
-   & {:keys [explain? authorizer trusted-block-indices]}]
+   & {:keys [explain? authorizer trusted-block-indices limits]}]
   (let [;; Compute authorizer scope (extended when third-party blocks are trusted)
         authorizer-scope (when trusted-block-indices
                            (into #{0 :authorizer} trusted-block-indices))
@@ -586,45 +620,58 @@
                (when (:rules authorizer)
                  [[:authorizer (:rules authorizer)]])))
 
-        ;; 4. Apply rules to fixpoint with scope filtering
-        store (apply-rules-scoped indexed-rules store
-                                  :authorizer-scope authorizer-scope)
+        ;; 4. Apply rules to fixpoint with scope filtering. A limit
+        ;;    reached first denies: the partial store is never evaluated.
+        {:keys [store error]}
+        (try
+          {:store (apply-rules-scoped indexed-rules store
+                                      :authorizer-scope authorizer-scope
+                                      :limits limits)}
+          (catch clojure.lang.ExceptionInfo e
+            (let [data (ex-data e)]
+              (if (= :limit-exceeded (:stroopwafel/error data))
+                {:error (-> data
+                            (dissoc :stroopwafel/error)
+                            (assoc :type :limit-exceeded))}
+                (throw e)))))]
+    (if error
+      (cond-> {:valid? false :error error}
+        explain? (assoc :explain error))
+      (let [;; 5. Evaluate checks per block with scoped visibility
+            block-results
+            (mapcat
+             (fn [idx]
+               (let [block (nth blocks idx)
+                     scope (trusted-origins idx)]
+                 (eval-checks (:checks block) store scope explain?)))
+             (range (count blocks)))
 
-        ;; 5. Evaluate checks per block with scoped visibility
-        block-results
-        (mapcat
-         (fn [idx]
-           (let [block (nth blocks idx)
-                 scope (trusted-origins idx)]
-             (eval-checks (:checks block) store scope explain?)))
-         (range (count blocks)))
+            ;; 6. Evaluate authorizer checks (with extended scope if trusted blocks)
+            auth-scope (or authorizer-scope (trusted-origins nil))
 
-        ;; 6. Evaluate authorizer checks (with extended scope if trusted blocks)
-        auth-scope (or authorizer-scope (trusted-origins nil))
+            authorizer-results
+            (when (:checks authorizer)
+              (eval-checks (:checks authorizer) store auth-scope explain?))
 
-        authorizer-results
-        (when (:checks authorizer)
-          (eval-checks (:checks authorizer) store auth-scope explain?))
+            all-results (concat block-results authorizer-results)
+            failed (first (filter #(= :fail (:result %)) all-results))
 
-        all-results (concat block-results authorizer-results)
-        failed (first (filter #(= :fail (:result %)) all-results))
+            ;; 7. Evaluate authorizer policies (after all checks pass)
+            policy-result
+            (when (and (nil? failed) (:policies authorizer))
+              (eval-policies (:policies authorizer) store auth-scope))]
+        (cond
+          failed
+          (if explain?
+            {:valid? false :explain (:explain failed)}
+            {:valid? false})
 
-        ;; 7. Evaluate authorizer policies (after all checks pass)
-        policy-result
-        (when (and (nil? failed) (:policies authorizer))
-          (eval-policies (:policies authorizer) store auth-scope))]
-    (cond
-      failed
-      (if explain?
-        {:valid? false :explain (:explain failed)}
-        {:valid? false})
+          (and policy-result (= :deny (:result policy-result)))
+          (if explain?
+            {:valid? false :explain {:type :policy :result :deny}}
+            {:valid? false})
 
-      (and policy-result (= :deny (:result policy-result)))
-      (if explain?
-        {:valid? false :explain {:type :policy :result :deny}}
-        {:valid? false})
-
-      :else
-      (if explain?
-        {:valid? true :explain (:explain (last all-results))}
-        {:valid? true}))))
+          :else
+          (if explain?
+            {:valid? true :explain (:explain (last all-results))}
+            {:valid? true}))))))

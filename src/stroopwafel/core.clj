@@ -31,18 +31,24 @@
            `:rules`    — additional authorizer rules
            `:policies` — ordered allow/deny policies (first match wins)
            `:trusted-external-keys` — vector of trusted third-party key bytes
+         `:limits`     (map)     — fixpoint limits over `datalog/default-limits`:
+           `:max-iterations` (100) and `:max-facts` (1000). Reaching a
+           limit before the fixpoint denies (fail closed); unknown keys or
+           non-positive values throw
 
    Returns:
      ```clojure
      {:valid?  boolean
-      :explain explain-tree (when :explain? true)}
+      :explain explain-tree (when :explain? true)
+      :error   {:type :limit-exceeded :limit :max :facts :iterations}
+               (only when a limit was reached)}
      ```
 
    Block scope isolation:
      - Block 0 checks see: #{0 :authorizer}
      - Block N checks see: #{0 N :authorizer}
      - Authorizer policies see: #{0 :authorizer} (+ trusted third-party indices)"
-  [token & {:keys [explain? authorizer]}]
+  [token & {:keys [explain? authorizer limits]}]
   (let [blocks (:blocks token)
 
         ;; Extract logical content from each block
@@ -80,7 +86,8 @@
     (datalog/eval-token core-token
                         :explain? explain?
                         :authorizer authorizer-with-signers
-                        :trusted-block-indices trusted-block-indices)))
+                        :trusted-block-indices trusted-block-indices
+                        :limits limits)))
 
 (defn graph
   "Converts an explain tree into a graph representation.
