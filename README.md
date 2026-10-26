@@ -7,15 +7,15 @@ Since 0.11.0, stroopwafel is **only the engine**. It has no crypto, keys,
 signatures, envelopes or wire formats, and no dependencies besides
 Clojure. The rest of the stack lives in sibling libraries:
 
-| Library | Role |
-|---|---|
-| **stroopwafel** (this) | Datalog: facts, rules, checks, policies, scopes; `evaluate` |
-| [signet](https://github.com/franks42/signet) | crypto: keys, signing, signed envelopes, capability chains |
+| Library                                                        | Role                                                                                                                                                                                                  |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **stroopwafel** (this)                                         | Datalog: facts, rules, checks, policies, scopes; `evaluate`                                                                                                                                           |
+| [signet](https://github.com/franks42/signet)                   | crypto: keys, signing, signed envelopes, capability chains                                                                                                                                            |
 | [stroopwafel-pdp](https://github.com/franks42/stroopwafel-pdp) | the decision point: verifies signed blocks with signet, turns them into facts and calls the engine. Includes an SPKI/SDSI assertion pipeline (sayer, validity, trust closure, delegation, revocation) |
-| your PEP | enforces the decision in your wire format (HTTP, websocket, …) |
+| your PEP                                                       | enforces the decision in your wire format (HTTP, websocket, …)                                                                                                                                        |
 
 The caller, normally stroopwafel-pdp, verifies signatures and extracts
-facts *before* calling `evaluate`. The engine trusts its input, so
+facts _before_ calling `evaluate`. The engine trusts its input, so
 everything that reaches it must already be verified.
 
 Like a stroopwafel: two layers with something sealed between them.
@@ -53,7 +53,7 @@ Like a stroopwafel: two layers with something sealed between them.
   optional `:when` guards and `:let` bindings. Rules run to a fixpoint,
   so recursive rules (transitive closure) work, within limits (below).
 - **Checks** must all pass. `{:id :query [...]}` passes if the query
-  matches (check-if). `{:kind :reject ...}` passes if the query does *not*
+  matches (check-if). `{:kind :reject ...}` passes if the query does _not_
   match (reject-if).
 - **Policies** belong to the authorizer and run in order once all checks
   pass. The first match wins, whether `:allow` or `:deny`. If no policy

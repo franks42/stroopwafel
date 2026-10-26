@@ -12,12 +12,12 @@ signed block chains, ephemeral keys, sealing, signed requests, a PEP
 pipeline, and replay protection. In April 2026 it was split into four
 layers (`docs/library-separation-plan.md`):
 
-| Layer | Contents | Depends on |
-|---|---|---|
-| **stroopwafel** | `core.clj` (`evaluate`), `datalog.clj` (the engine), `graph.clj` (explain → graph) | Clojure |
-| **signet** | keys, signing, signed envelopes, capability chains, SSH key import | cedn, uuidv7, … |
+| Layer               | Contents                                                                                                                                                               | Depends on          |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| **stroopwafel**     | `core.clj` (`evaluate`), `datalog.clj` (the engine), `graph.clj` (explain → graph)                                                                                     | Clojure             |
+| **signet**          | keys, signing, signed envelopes, capability chains, SSH key import                                                                                                     | cedn, uuidv7, …     |
 | **stroopwafel-pdp** | verifies signed blocks or chains, turns them into facts, calls the engine; trust roots, replay protection; the SPKI/SDSI assertion pipeline (`stroopwafel.pdp.spki.*`) | signet, stroopwafel |
-| **application PEP** | enforces the decision in a wire format (for example alpaca-clj over HTTP) | stroopwafel-pdp |
+| **application PEP** | enforces the decision in a wire format (for example alpaca-clj over HTTP)                                                                                              | stroopwafel-pdp     |
 
 Where the old namespaces went (commit `68c03ff`): crypto, envelope, ssh
 and chain moved to signet. replay, trust and pep moved to
@@ -113,21 +113,21 @@ code yet.
 
 ## History
 
-| Version | What |
-|---|---|
-| 0.1.0 | KEX copied in; CEDN canonical bytes replace `pr-str`; 27 KEX tests green |
-| 0.2.0 | origin sets, scope isolation, fixpoint rules, reject checks, authorizer context |
-| 0.3.0 | revocation IDs, authorizer policies, ephemeral keys per block |
-| 0.4.0 | sealed tokens |
-| 0.5.0 | `:when` / `:let` expressions |
-| 0.6.0 | third-party blocks |
-| 0.7.0 | babashka compatibility |
-| 0.8.0 | requester-bound tokens (SPKI join of a signed fact and a verified request key) |
-| 0.9.0 | multi-token authorization, SDSI name-binding patterns, delegation chains, fixpoint safety tests |
-| 0.10.0 | signed envelopes, PEP pipeline, replay guard, trust-root facts, SSH key import (from alpaca-clj) |
-| 0.10.2 | blocks as unified signed envelopes |
-| 0.11.0 | stripped to the pure engine; everything else moved to signet and stroopwafel-pdp; 66 tests |
-| 0.12.0 | fixpoint limits fail closed (deny with `:error`) and are configurable (`:limits`); 71 tests |
+| Version | What                                                                                             |
+| ------- | ------------------------------------------------------------------------------------------------ |
+| 0.1.0   | KEX copied in; CEDN canonical bytes replace `pr-str`; 27 KEX tests green                         |
+| 0.2.0   | origin sets, scope isolation, fixpoint rules, reject checks, authorizer context                  |
+| 0.3.0   | revocation IDs, authorizer policies, ephemeral keys per block                                    |
+| 0.4.0   | sealed tokens                                                                                    |
+| 0.5.0   | `:when` / `:let` expressions                                                                     |
+| 0.6.0   | third-party blocks                                                                               |
+| 0.7.0   | babashka compatibility                                                                           |
+| 0.8.0   | requester-bound tokens (SPKI join of a signed fact and a verified request key)                   |
+| 0.9.0   | multi-token authorization, SDSI name-binding patterns, delegation chains, fixpoint safety tests  |
+| 0.10.0  | signed envelopes, PEP pipeline, replay guard, trust-root facts, SSH key import (from alpaca-clj) |
+| 0.10.2  | blocks as unified signed envelopes                                                               |
+| 0.11.0  | stripped to the pure engine; everything else moved to signet and stroopwafel-pdp; 66 tests       |
+| 0.12.0  | fixpoint limits fail closed (deny with `:error`) and are configurable (`:limits`); 71 tests      |
 
 ## Lineage
 
