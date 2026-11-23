@@ -5,6 +5,8 @@
 **Scope:** Architecture, design and code review of the engine at v0.12.0
 **Method:** Read-only review — source, tests, docs, build. Tests were not run; the 71-test count and 0.12.0 history are as documented in `context.md` and the README.
 
+> **Superseded (2026-11-23)** by `docs/review-swival-inkling-2-mini.md`. Kept as the historical record; don't act on it. In particular, "no correctness bugs in the happy path" is wrong: the arity mismatch fails open for checks, rule bodies _and_ allow policies (an authorization bypass, not checks-only), and `graph` threw on every passing `evaluate` result. Both are fixed on branch `fix/strict-arity`; remaining work is tracked in `docs/TODO.md`.
+
 ---
 
 ## Overall
