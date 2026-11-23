@@ -1,6 +1,6 @@
 # Stroopwafel: context
 
-## What this is (0.12.0)
+## What this is (0.13.0)
 
 Stroopwafel is a pure Datalog engine for authorization decisions. Facts,
 rules, checks and policies go in; `{:valid? …}` comes out. It has no
@@ -133,6 +133,7 @@ code yet.
 | 0.10.2  | blocks as unified signed envelopes                                                               |
 | 0.11.0  | stripped to the pure engine; everything else moved to signet and stroopwafel-pdp; 66 tests       |
 | 0.12.0  | fixpoint limits fail closed (deny with `:error`) and are configurable (`:limits`); 71 tests      |
+| 0.13.0  | strict pattern length (fixes a bypass); explain shows the decision and rule proofs; 106 tests    |
 
 ## Lineage
 
