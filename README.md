@@ -49,6 +49,11 @@ Like a stroopwafel: two layers with something sealed between them.
 ## The model
 
 - **Facts** are vectors, for example `[:right "alice" :read "/api/data"]`.
+  A pattern only matches facts of the same length. `sw/check-arity` lists
+  predicates used with different lengths (almost always a typo: a reject
+  check or deny policy that can never fire); run it on a policy set
+  before storing it. `evaluate` reports them as `:warnings` by default;
+  `:arity-check :error` denies instead, `:off` skips the check.
 - **Rules** derive facts: `{:id :head [...] :body [[...] ...]}`, with
   optional `:when` guards and `:let` bindings. Rules run to a fixpoint,
   so recursive rules (transitive closure) work, within limits (below).

@@ -198,7 +198,7 @@ The architecture is clean and the fail-closed design is right. The core engine i
 - ~~Should the limit-exceeded explain tree be handled in `graph`, or should `graph` simply reject it with a clearer error?~~ Resolved by finding 5's decision shape — see Decisions.
 - ~~Should `eval-check` always emit map-shaped `:because` nodes, or should `graph` handle bare origin sets? (Both are valid; the first is cleaner.)~~ Superseded — `:because` becomes proof nodes; see Decisions.
 - ~~Should the explain tree carry rule-derivation proofs (so the graph can show _why_ a derived fact exists), or should the graph's derived-fact branch be removed as unreachable?~~ Resolved — see Decisions.
-- Should arity be enforced at match time only, or also validated up front (rule/check/policy patterns vs. known predicate arities) so mistakes surface as errors rather than silent non-matches?
+- ~~Should arity be enforced at match time only, or also validated up front (rule/check/policy patterns vs. known predicate arities) so mistakes surface as errors rather than silent non-matches?~~ Resolved — see Decisions.
 - ~~All-reasons explain: show circular derivations (honest: every edge is a valid rule application; the graph shows the loop), mark them, or filter to non-circular reasons only (clearer for tutorials, but a correct filter is a real well-foundedness computation, not a cheap check)?~~ Resolved — see Decisions.
 - ~~All-reasons explain: is a flat `fact → [derivations]` table acceptable for `:all` mode, while `true` keeps the nested tree — or should both modes switch to the flat table so there's one shape?~~ Resolved — see Decisions.
 
@@ -212,6 +212,7 @@ The architecture is clean and the fail-closed design is right. The core engine i
 - 2026-11-23 — `:explain? :all` shows every derivation, circular ones included: tutorials should show circular reasons, not hide them, and every step is a valid rule application.
 - 2026-11-23 — One flat explain shape for both `true` and `:all` (fact table + derivation nodes), replacing the nested tree: one format for consumers, and the only shape that can hold cycles.
 - 2026-11-23 — `:explain` is the whole decision (finding 5): every check, every evaluated policy, one fact table, and a `:reason`. A limit is a decision with `:reason :limit-exceeded`, so `graph` renders it (finding 3) instead of throwing.
+- 2026-11-23 — Pattern-length mismatches are validated up front: a pure `check-arity` for the PDP to run before policies enter the policy db, plus an `evaluate` option `:arity-check` — `:warn` (default; returns `:warnings`, the caller logs them), `:error` (deny), `:off`. It's essentially a bug, and a mismatched reject check or deny policy silently never fires (fail open). Not a DoS vector: a mismatch never matches and costs less; `:error` mode only denies the token or policy set that contains it — hence catch it at insert time.
 
 ### Rule proofs in explain
 

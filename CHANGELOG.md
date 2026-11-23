@@ -58,6 +58,14 @@ History before 0.13.0 is in `context.md` (## History).
 - CI: GitHub Actions runs the tests on the JVM and on babashka, and
   builds the JAR, on pushes to `main` and on pull requests.
 - `bb test:bb` runs the test suite under babashka.
+- `sw/check-arity` (and `datalog/arity-mismatches`) list predicates used
+  with different lengths across facts, rule heads and bodies, checks and
+  policies, with where each length occurs. Run it on a policy set before
+  storing it.
+- `evaluate` option `:arity-check`: `:warn` (default) adds `:warnings`
+  to the result when lengths disagree, leaving the decision alone;
+  `:error` denies with `{:type :arity-mismatch :mismatches [...]}`;
+  `:off` skips the check. Unknown values throw.
 
 ### Docs and housekeeping
 

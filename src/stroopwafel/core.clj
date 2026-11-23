@@ -24,7 +24,7 @@
          `:checks` — vector of check maps (optional)
          `:external-key` — (optional) byte array identifying third-party signer
      - keyword args:
-         `:explain?`   (boolean) — include proof tree in result
+         `:explain?`   (true or :all) — include the decision explain in result
          `:authorizer` (map)     — authorizer context with:
            `:facts`    — additional authorizer facts
            `:checks`   — additional authorizer checks
@@ -34,21 +34,26 @@
          `:limits`     (map)     — fixpoint limits over `datalog/default-limits`:
            `:max-iterations` (100) and `:max-facts` (1000). Reaching a
            limit before the fixpoint denies (fail closed); unknown keys or
-           non-positive values throw
+           non-positive values throw. `:max-derivations` (10000) only caps
+           explain data
+         `:arity-check` — `:warn` (default), `:error` or `:off`: whether
+           predicates used with different lengths add `:warnings`, deny,
+           or are ignored (see `check-arity`)
 
    Returns:
      ```clojure
      {:valid?  boolean
-      :explain explain-tree (when :explain? true)
-      :error   {:type :limit-exceeded :limit :max :facts :iterations}
-               (only when a limit was reached)}
+      :explain decision map (when :explain?)
+      :error   {:type :limit-exceeded …} or {:type :arity-mismatch …}
+               (only when a limit was reached, or with :arity-check :error)
+      :warnings [{:type :arity-mismatch …}] (only with :arity-check :warn)}
      ```
 
    Block scope isolation:
      - Block 0 checks see: #{0 :authorizer}
      - Block N checks see: #{0 N :authorizer}
      - Authorizer policies see: #{0 :authorizer} (+ trusted third-party indices)"
-  [token & {:keys [explain? authorizer limits]}]
+  [token & {:keys [explain? authorizer limits arity-check] :or {arity-check :warn}}]
   (let [blocks (:blocks token)
 
         ;; Extract logical content from each block
@@ -87,7 +92,26 @@
                         :explain? explain?
                         :authorizer authorizer-with-signers
                         :trusted-block-indices trusted-block-indices
-                        :limits limits)))
+                        :limits limits
+                        :arity-check arity-check)))
+
+(defn check-arity
+  "Finds predicates used with more than one length in `token` and the
+   `:authorizer` — facts, rule heads and bodies, checks and policies.
+   A pattern only matches facts of its own length, so a mismatch is
+   almost always a typo; in a reject check or deny policy it silently
+   never fires.
+
+   Run it on a policy set before storing it (`{:blocks []}` plus the
+   authorizer), so a typo is caught before it reaches evaluation.
+
+   Returns `[]` when consistent, otherwise a vector of
+   `{:predicate p :arities {length [location …]}}` — see
+   `datalog/arity-mismatches`."
+  [token & {:keys [authorizer]}]
+  (datalog/arity-mismatches
+   (mapv #(select-keys % [:facts :rules :checks]) (:blocks token))
+   (dissoc authorizer :trusted-external-keys)))
 
 (defn graph
   "Converts an explain tree into a graph representation.

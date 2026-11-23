@@ -719,46 +719,8 @@
   ([checks store scope explain? ctx]
    (map (fn [c] (eval-check c store scope explain? ctx)) checks)))
 
-(defn eval-token
-  "Evaluates an authorization token with per-block scope isolation.
-
-   Each block's facts are tagged with their block index as origin.
-   Rules fire with scope filtering — a rule in block N only sees
-   authority facts (#{0}), its own block facts (#{N}), and authorizer
-   facts (#{:authorizer}).
-
-   Checks are evaluated per-block with appropriate scope:
-     - Block 0 checks: scope #{0 :authorizer}
-     - Block N checks: scope #{0 N :authorizer}
-     - Authorizer checks: scope #{0 :authorizer}
-
-   Accepts optional `:authorizer` map with:
-     - `:facts`  — additional authorizer facts
-     - `:checks` — additional authorizer checks
-     - `:rules`  — additional authorizer rules
-
-   Accepts optional `:limits` (`:max-iterations`, `:max-facts`,
-   `:max-derivations`) over `default-limits`. Reaching `:max-iterations` or
-   `:max-facts` before the fixpoint denies; `:max-derivations` only
-   truncates explain data.
-
-   `:explain?` is `true` (one derivation per fact, the first found) or
-   `:all` (every derivation, circular ones included). Both produce the same
-   flat shape: see `eval-check`.
-
-   Returns:
-   |||
-   |:-|:-|
-   | `:valid?`  | boolean authorization decision
-   | `:explain` | with :explain?, the decision map (below)
-
-   The decision map is `{:type :decision :result :allow|:deny :reason …
-   :checks [...] :policies [...] :facts {...}}`: every check with its
-   `:block`, every evaluated policy (up to the deciding one) with its
-   `:index`, and one fact table for all of them. `:reason` is
-   `:check-failed`, `:no-policies`, `:policy`, `:no-matching-policy`
-   or `:limit-exceeded` (then with `:error` instead of checks).
-   | `:error`   | when a limit was reached: `{:type :limit-exceeded :limit :max :facts :iterations}`"
+(defn- eval-token*
+  "Evaluates a token whose patterns already passed the arity check. See `eval-token`."
   [{:keys [blocks] :as _token}
    & {:keys [explain? authorizer trusted-block-indices limits]}]
   (let [;; Compute authorizer scope (extended when third-party blocks are trusted)
@@ -861,3 +823,112 @@
                             :facts    (explain-facts roots store
                                                      (:derivations ctx) (:stated ctx))}
                      truncated? (assoc :truncated? true)))))))))
+
+(defn arity-mismatches
+  "Predicates used with more than one length across `blocks` and the
+   `authorizer` — facts, rule heads, rule bodies, checks and policies. A
+   pattern only matches facts of its own length, so a mismatch is almost
+   always a typo (a reject check or deny policy that can never fire).
+
+   Returns a vector, sorted by predicate, of
+   `{:predicate p :arities {length [location …]}}` where a location is
+   `{:block idx|:authorizer :in :facts|:rule-head|:rule-body|:check|:policy}`
+   plus the rule's, check's or policy's `:id` (or a policy's `:index`).
+   Patterns whose first element is a variable are skipped. Empty when
+   consistent."
+  [blocks authorizer]
+  (let [uses
+        (for [[block src] (concat (map-indexed vector blocks)
+                                  (when authorizer [[:authorizer authorizer]]))
+              [in id-of patterns]
+              (concat
+               [[:facts nil (:facts src)]]
+               (mapcat (fn [{:keys [id head body]}]
+                         [[:rule-head id [head]] [:rule-body id body]])
+                       (:rules src))
+               (map (fn [{:keys [id query]}] [:check id query]) (:checks src))
+               (map-indexed (fn [i {:keys [id query]}]
+                              [:policy (if id [:id id] [:index i]) query])
+                            (:policies src)))
+              pattern patterns
+              :when (and (sequential? pattern) (seq pattern)
+                         (not (variable? (first pattern))))]
+          [(first pattern) (count pattern)
+           (cond-> {:block block :in in}
+             (and id-of (not= in :policy)) (assoc :id id-of)
+             (= in :policy) (assoc (first id-of) (second id-of)))])
+        add-loc (fn [locs loc] (if (some #{loc} locs) locs (conj (or locs []) loc)))
+        by-pred (reduce (fn [m [p n loc]] (update-in m [p n] add-loc loc))
+                        {} uses)]
+    (->> by-pred
+         (filter (fn [[_ arities]] (> (count arities) 1)))
+         (sort-by (comp str key))
+         (mapv (fn [[p arities]]
+                 {:predicate p :arities (into (sorted-map) arities)})))))
+
+(defn eval-token
+  "Evaluates an authorization token with per-block scope isolation.
+
+   Each block's facts are tagged with their block index as origin.
+   Rules fire with scope filtering — a rule in block N only sees
+   authority facts (#{0}), its own block facts (#{N}), and authorizer
+   facts (#{:authorizer}).
+
+   Checks are evaluated per-block with appropriate scope:
+     - Block 0 checks: scope #{0 :authorizer}
+     - Block N checks: scope #{0 N :authorizer}
+     - Authorizer checks: scope #{0 :authorizer}
+
+   Accepts optional `:authorizer` map with:
+     - `:facts`  — additional authorizer facts
+     - `:checks` — additional authorizer checks
+     - `:rules`  — additional authorizer rules
+
+   Accepts optional `:limits` (`:max-iterations`, `:max-facts`,
+   `:max-derivations`) over `default-limits`. Reaching `:max-iterations` or
+   `:max-facts` before the fixpoint denies; `:max-derivations` only
+   truncates explain data.
+
+   `:explain?` is `true` (one derivation per fact, the first found) or
+   `:all` (every derivation, circular ones included). Both produce the same
+   flat shape: see `eval-check`.
+
+   Returns:
+   |||
+   |:-|:-|
+   | `:valid?`  | boolean authorization decision
+   | `:explain` | with :explain?, the decision map (below)
+
+   The decision map is `{:type :decision :result :allow|:deny :reason …
+   :checks [...] :policies [...] :facts {...}}`: every check with its
+   `:block`, every evaluated policy (up to the deciding one) with its
+   `:index`, and one fact table for all of them. `:reason` is
+   `:check-failed`, `:no-policies`, `:policy`, `:no-matching-policy`
+   or `:limit-exceeded` (then with `:error` instead of checks).
+   | `:error`   | when a limit was reached: `{:type :limit-exceeded :limit :max :facts :iterations}`,
+   |            | or with `:arity-check :error`: `{:type :arity-mismatch :mismatches [...]}`
+   | `:warnings`| with `:arity-check :warn` (the default), when patterns disagree on length
+
+   `:arity-check` (`:warn` default, `:error`, `:off`) checks that every use of a
+   predicate — facts, rule heads and bodies, checks, policies — has the same
+   length (see `arity-mismatches`). A mismatched pattern never matches, so a
+   reject check or deny policy with a typo silently never fires. `:warn` adds
+   `:warnings` and leaves the decision alone; `:error` denies before evaluating."
+  [token & {:keys [explain? authorizer arity-check]
+            :or   {arity-check :warn}
+            :as   opts}]
+  (when-not (#{:warn :error :off} arity-check)
+    (throw (ex-info "Invalid :arity-check: must be :warn, :error or :off"
+                    {:arity-check arity-check})))
+  (let [mismatches (when-not (= :off arity-check)
+                     (arity-mismatches (:blocks token) authorizer))]
+    (if (and (seq mismatches) (= :error arity-check))
+      (let [error {:type :arity-mismatch :mismatches mismatches}]
+        (cond-> {:valid? false :error error}
+          explain? (assoc :explain {:type   :decision
+                                    :result :deny
+                                    :reason :arity-mismatch
+                                    :error  error})))
+      (cond-> (apply eval-token* token (mapcat identity (dissoc opts :arity-check)))
+        (seq mismatches)
+        (assoc :warnings (mapv #(assoc % :type :arity-mismatch) mismatches))))))

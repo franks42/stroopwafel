@@ -18,5 +18,5 @@ From `docs/review-swival-inkling-2-mini.md` (revised 2026-11-23), in priority or
 - [x] `deps.edn` — remove the nonexistent `"resources"` path
 - [x] Test `authorizer-with-signers` when the authorizer has no `:facts`
 - [x] Document within-round block ordering — later blocks see earlier blocks' derived facts in the same round; README and architecture docs (README model + context.md; order can't change the fixpoint)
-- [ ] Up-front arity validation for reject checks / deny policies — with strict matching, a reject pattern of the wrong arity silently never fires (fail open); see review open question
+- [x] Up-front arity validation for reject checks / deny policies — with strict matching, a reject pattern of the wrong arity silently never fires (fail open); `sw/check-arity` + `evaluate :arity-check :warn|:error|:off` (see review Decisions)
 - [ ] Bump to 0.13.0 after the arity fix — strict arity is a behaviour change that can reject tokens that pass today; `CHANGELOG.md` is kept current with each commit

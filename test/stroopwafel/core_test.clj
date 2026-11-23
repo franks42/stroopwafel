@@ -697,3 +697,60 @@
                                  :policies [{:kind  :allow
                                              :query '[[:time ?t] [:block-signed-by 1 ?k]]}]})]
       (t/is (true? (:valid? result))))))
+
+;; --- Pattern-length (arity) validation --------------------------------------
+
+(def ^:private typo-token
+  {:blocks [{:facts  [[:right "alice" :read]]
+             :rules  [{:id :can :head '[:can ?u] :body '[[:right ?u :read]]}]
+             :checks [{:id :no-writes :kind :reject :query '[[:right ?u]]}]}]})
+
+(def ^:private typo-mismatch
+  {:predicate :right
+   :arities   {2 [{:block 0 :in :check :id :no-writes}]
+               3 [{:block 0 :in :facts}
+                  {:block 0 :in :rule-body :id :can}]}})
+
+(t/deftest check-arity-finds-mismatches
+  (t/is (= [typo-mismatch] (sut/check-arity typo-token)))
+  (t/is (= [] (sut/check-arity delegation-token)) "consistent token"))
+
+(t/deftest check-arity-on-a-policy-set-alone
+  (t/testing "what a PDP runs before storing policies"
+    (t/is (= [{:predicate :role
+               :arities   {3 [{:block :authorizer :in :policy :id :admins}]
+                           4 [{:block :authorizer :in :policy :index 1}]}}]
+             (sut/check-arity {:blocks []}
+                              :authorizer
+                              {:policies [{:id :admins :kind :allow
+                                           :query '[[:role ?u :admin]]}
+                                          {:kind :deny
+                                           :query '[[:role ?u :guest :x]]}]})))))
+
+(t/deftest check-arity-ignores-variable-predicates
+  (t/is (= [] (sut/check-arity {:blocks [{:facts  [[:a 1] [:b 1 2]]
+                                          :checks [{:id :any :query '[[?p 1]]}]}]}))))
+
+(t/deftest evaluate-warns-on-arity-mismatch-by-default
+  (let [result (sut/evaluate typo-token)]
+    (t/is (true? (:valid? result)) "the decision is unchanged")
+    (t/is (= [(assoc typo-mismatch :type :arity-mismatch)] (:warnings result))))
+  (t/is (= {:valid? true} (sut/evaluate delegation-token)) "no :warnings key when clean"))
+
+(t/deftest evaluate-can-deny-on-arity-mismatch
+  (let [result (sut/evaluate typo-token :arity-check :error :explain? true)]
+    (t/is (= {:valid? false
+              :error  {:type :arity-mismatch :mismatches [typo-mismatch]}
+              :explain {:type   :decision
+                        :result :deny
+                        :reason :arity-mismatch
+                        :error  {:type :arity-mismatch :mismatches [typo-mismatch]}}}
+             result)))
+  (t/is (= {:valid? true} (sut/evaluate delegation-token :arity-check :error))))
+
+(t/deftest evaluate-arity-check-off
+  (t/is (= {:valid? true} (sut/evaluate typo-token :arity-check :off))))
+
+(t/deftest evaluate-rejects-unknown-arity-check-mode
+  (t/is (thrown-with-msg? clojure.lang.ExceptionInfo #"arity-check"
+                          (sut/evaluate typo-token :arity-check :loud))))
