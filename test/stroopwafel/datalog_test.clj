@@ -699,3 +699,18 @@
                                     {[:user "alice"] #{0}})
                     (catch clojure.lang.ExceptionInfo e (ex-data e)))]
       (t/is (= '{:variable ?x} data)))))
+
+(t/deftest fixpoint-records-derivations-only-on-request
+  (let [rules [[0 [{:id :r :head '[:can ?u] :body '[[:right ?u]]}]]]
+        store (sut/insert-facts (sut/make-fact-store) [[:right "alice"]] #{0})]
+    (t/testing "explain? records rule, block, bindings and proof per derived fact"
+      (t/is (= {[:can "alice"] {:rule  :r
+                                :block 0
+                                :env   '{?u "alice"}
+                                :proof [{:type :fact :fact [:right "alice"] :origin #{0}}]}}
+               (:derivations (sut/fixpoint rules store :explain? true)))))
+    (t/testing "without explain? nothing is recorded"
+      (t/is (nil? (:derivations (sut/fixpoint rules store)))))
+    (t/testing "apply-rules-scoped still returns the bare store"
+      (t/is (= {[:right "alice"] #{0} [:can "alice"] #{0}}
+               (sut/apply-rules-scoped rules store))))))

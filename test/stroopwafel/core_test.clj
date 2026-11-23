@@ -344,3 +344,93 @@
       (let [result (sut/evaluate token :authorizer policy :limits {:max-facts 30})]
         (t/is (false? (:valid? result)))
         (t/is (= :max-facts (-> result :error :limit)))))))
+
+;; ---------------------------------------------------------------------------
+;; Rule proofs in explain: evaluate -> graph, end to end.
+;; ---------------------------------------------------------------------------
+
+(def ^:private delegation-token
+  {:blocks [{:facts  [[:right "alice" :read "file-1"]]
+             :rules  []
+             :checks []}
+            {:facts  []
+             :rules  [{:id   :can-from-right
+                       :head '[:can ?u ?a ?r]
+                       :body '[[:right ?u ?a ?r]]}]
+             :checks [{:id    :alice-can-read
+                       :query '[[:can "alice" :read "file-1"]]}]}]})
+
+(defn- fact-nodes [graph]
+  (filter :fact (vals (:nodes graph))))
+
+(t/deftest explain-carries-rule-proofs
+  (let [result  (sut/evaluate delegation-token :explain? true)
+        because (get-in result [:explain :because])]
+    (t/is (true? (:valid? result)))
+    (t/testing "the derived fact names its rule, block, bindings and proof"
+      (t/is (= 1 (count because)))
+      (t/is (= {:fact   [:can "alice" :read "file-1"]
+                :origin #{0 1}
+                :rule   :can-from-right
+                :block  1
+                :env    '{?u "alice" ?a :read ?r "file-1"}
+                :proof  [{:fact [:right "alice" :read "file-1"] :origin #{0}}]}
+               (first because))))))
+
+(t/deftest graph-renders-evaluate-output
+  (t/testing "graph accepts the explain tree evaluate actually produces"
+    (let [graph (sut/graph (:explain (sut/evaluate delegation-token :explain? true)))
+          kinds (frequencies (map :kind (vals (:nodes graph))))]
+      (t/is (= {:check 1 :derived-fact 1 :authority-fact 1} kinds))
+      (t/is (= #{{:from :n1 :to :n2 :label :because}
+                 {:from :n2 :to :n3 :label :because}}
+               (set (:edges graph))))
+      (t/is (= {:id :n2 :kind :derived-fact :fact [:can "alice" :read "file-1"]
+                :origin #{0 1} :rule :can-from-right :block 1
+                :env '{?u "alice" ?a :read ?r "file-1"}}
+               (get-in graph [:nodes :n2]))))))
+
+(t/deftest explain-covers-every-pattern-of-a-join-check
+  (let [token  {:blocks [{:facts  [[:user "alice"] [:right "alice" :read]]
+                          :rules  []
+                          :checks [{:id    :join
+                                    :query '[[:user ?u] [:right ?u :read]]}]}]}
+        because (get-in (sut/evaluate token :explain? true) [:explain :because])]
+    (t/is (= [[:user "alice"] [:right "alice" :read]] (mapv :fact because)))))
+
+(t/deftest graph-shares-repeated-facts
+  (t/testing "a fact reached along two proof paths is one node"
+    (let [token {:blocks [{:facts  [[:edge 1 2] [:edge 2 3] [:edge 1 3]]
+                           :rules  [{:id   :step
+                                     :head '[:path ?a ?b]
+                                     :body '[[:edge ?a ?b]]}
+                                    {:id   :pair
+                                     :head '[:two ?a ?c]
+                                     :body '[[:path ?a ?b] [:path ?b ?c] [:path ?a ?c]]}]
+                           :checks [{:id :c :query '[[:two 1 3] [:edge 1 3]]}]}]}
+          graph (sut/graph (:explain (sut/evaluate token :explain? true)))
+          facts (map :fact (fact-nodes graph))]
+      (t/is (= (count facts) (count (set facts))))
+      ;; [:edge 1 3] is reached from the check and via [:path 1 3]
+      (t/is (= 1 (count (filter #{[:edge 1 3]} facts)))))))
+
+(t/deftest reject-failure-shows-the-matching-facts
+  (let [token  {:blocks [{:facts  [[:admin "mallory"]]
+                          :rules  []
+                          :checks [{:id :no-admin :kind :reject
+                                    :query '[[:admin ?u]]}]}]}
+        result (sut/evaluate token :explain? true)]
+    (t/is (false? (:valid? result)))
+    (t/is (= [{:fact [:admin "mallory"] :origin #{0}}]
+             (get-in result [:explain :because])))
+    (t/is (= #{:check :authority-fact}
+             (set (map :kind (vals (:nodes (sut/graph (:explain result))))))))))
+
+(t/deftest reject-pass-graph-has-no-empty-fact-node
+  (let [token {:blocks [{:facts  [[:user "alice"]]
+                         :rules  []
+                         :checks [{:id :no-admin :kind :reject
+                                   :query '[[:admin ?u]]}]}]}
+        graph (sut/graph (:explain (sut/evaluate token :explain? true)))]
+    (t/is (= 1 (count (:nodes graph))))
+    (t/is (empty? (:edges graph)))))

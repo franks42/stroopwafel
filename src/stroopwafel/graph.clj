@@ -19,17 +19,20 @@
 
 (defn derived-fact-node
   [id explain-node]
-  {:id    id
-   :kind  :derived-fact
-   :fact  (:fact explain-node)
-   :rule  (:rule explain-node)
-   :env   (:env explain-node)})
+  {:id     id
+   :kind   :derived-fact
+   :fact   (:fact explain-node)
+   :origin (:origin explain-node)
+   :rule   (:rule explain-node)
+   :block  (:block explain-node)
+   :env    (:env explain-node)})
 
 (defn authority-fact-node
   [id explain-node]
-  {:id   id
-   :kind :authority-fact
-   :fact (:fact explain-node)})
+  {:id     id
+   :kind   :authority-fact
+   :fact   (:fact explain-node)
+   :origin (:origin explain-node)})
 
 (defn missing-fact
   [id explain-node]
@@ -49,8 +52,7 @@
    This function does not handle children; it only normalizes
    the current node into a graph-friendly representation.
 
-   Origin format: sets (#{0}, #{0 1}, etc.) for facts,
-   :reject-pass for deny rule passes."
+   Origin format: sets (#{0}, #{0 1}, etc.) for facts."
   [id explain-node]
   (cond
     ;; check node
@@ -69,67 +71,78 @@
                                    (set (keys explain-node)))
                      :node-class (some-> explain-node class .getName)}))))
 
+(defn- because-nodes
+  "A check's `:because`: a vector of proof nodes (what `evaluate` emits),
+   or a single node (older hand-built trees)."
+  [because]
+  (cond (sequential? because) because
+        (some? because)       [because]
+        :else                 []))
+
+(defn- children
+  "The `[edge-label child-node]` pairs below an explain node."
+  [explain-node]
+  (cond
+    (= (:type explain-node) :check)
+    (cond
+      (= :pass (:result explain-node))
+      (map (fn [n] [:because n]) (because-nodes (:because explain-node)))
+
+      ;; failed reject check: the facts that matched are the evidence
+      (contains? explain-node :rejected)
+      (map (fn [n] [:rejected-by n]) (because-nodes (:because explain-node)))
+
+      :else
+      [[:missing {:kind :missing :fact (:missing explain-node)}]])
+
+    (derived-node? explain-node)
+    (map (fn [n] [:because n]) (:proof explain-node))
+
+    :else []))
+
+(defn- fact-key
+  "Facts are shared: the same fact reached along several proof paths is one
+   node. Checks and synthetic missing-fact nodes are never shared."
+  [explain-node]
+  (when (and (map? explain-node)
+             (contains? explain-node :fact)
+             (not= :check (:type explain-node))
+             (not= :missing (:kind explain-node)))
+    (:fact explain-node)))
+
+(defn- add-node
+  "Adds `explain-node` and everything below it to graph state
+   `{:counter :nodes :edges :seen}`, depth first. Returns `[id state]`."
+  [state explain-node]
+  (let [k (fact-key explain-node)]
+    (if-let [id (and k (get-in state [:seen k]))]
+      [id state]
+      (let [[id counter] (next-node-id (:counter state))
+            node         (explain-node->graph-node id explain-node)
+            state        (cond-> (-> state
+                                     (assoc :counter counter)
+                                     (assoc-in [:nodes id] node))
+                           k (assoc-in [:seen k] id))]
+        (reduce (fn [[id state] [label child]]
+                  (let [[child-id state] (add-node state child)]
+                    [id (update state :edges conj
+                                {:from id :to child-id :label label})]))
+                [id state]
+                (children explain-node))))))
+
 (defn build-graph
-  "Recursively converts an explain tree into a graph fragment.
+  "Converts an explain tree into a graph fragment, numbering nodes from
+   `counter`. A fact reached along several proof paths becomes one node
+   with several incoming edges.
 
    Returns a tuple:
      ```clojure
      [node-id next-counter {:nodes {...} :edges [...]}]
    ```"
   [explain-node counter]
-  (let [[id next-counter] (next-node-id counter)
-        node          (explain-node->graph-node id explain-node)]
-    (cond
-      ;; CHECK – PASS
-      (and (= (:type explain-node) :check)
-           (= (:result explain-node) :pass))
-      (let [[child-id child-counter child-graph] (build-graph
-                                                  (:because explain-node)
-                                                  next-counter)]
-        [id
-         child-counter
-         {:nodes (merge {id node} (:nodes child-graph))
-          :edges (conj (:edges child-graph)
-                       {:from id
-                        :to   child-id
-                        :label :because})}])
-
-      ;; CHECK – FAIL
-      (and (= (:type explain-node) :check)
-           (= (:result explain-node) :fail))
-      (let [missing {:kind :missing
-                     :fact (:missing explain-node)}
-            [child-id child-counter child-graph]
-            (build-graph missing next-counter)]
-        [id
-         child-counter
-         {:nodes (merge {id node} (:nodes child-graph))
-          :edges (conj (:edges child-graph)
-                       {:from id
-                        :to   child-id
-                        :label :missing})}])
-
-      ;; DERIVED FACT -> proof list
-      (derived-node? explain-node)
-      (reduce
-       (fn [[_ ctr g] proof-node]
-         (let [[pid next-ctr pg] (build-graph proof-node ctr)]
-           [id
-            next-ctr
-            {:nodes (merge (:nodes g) (:nodes pg))
-             :edges (conj (:edges g)
-                          {:from id
-                           :to   pid
-                           :label :because})}]))
-       [id next-counter {:nodes {id node} :edges []}]
-       (:proof explain-node))
-
-      ;; AUTHORITY FACT (leaf)
-      :else
-      [id
-       next-counter
-       {:nodes {id node}
-        :edges []}])))
+  (let [[id state] (add-node {:counter counter :nodes {} :edges [] :seen {}}
+                             explain-node)]
+    [id (:counter state) (select-keys state [:nodes :edges])]))
 
 (defn explain->graph
   "Converts an explain tree produced by the core into a graph structure.

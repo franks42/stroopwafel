@@ -196,9 +196,11 @@ The architecture is clean and the fail-closed design is right. The core engine i
 - ~~Should the arity-mismatch fix be strict (require equal arity) or lenient (allow fewer-element patterns to match, ignoring extra fact elements)? Strict is the safer default for an authorization engine.~~ Resolved — see Decisions.
 - Should "no policies → allow" stay as-is, or become deny (fail closed)?
 - Should the limit-exceeded explain tree be handled in `graph`, or should `graph` simply reject it with a clearer error?
-- Should `eval-check` always emit map-shaped `:because` nodes, or should `graph` handle bare origin sets? (Both are valid; the first is cleaner.)
-- Should the explain tree carry rule-derivation proofs (so the graph can show _why_ a derived fact exists), or should the graph's derived-fact branch be removed as unreachable?
+- ~~Should `eval-check` always emit map-shaped `:because` nodes, or should `graph` handle bare origin sets? (Both are valid; the first is cleaner.)~~ Superseded — `:because` becomes proof nodes; see Decisions.
+- ~~Should the explain tree carry rule-derivation proofs (so the graph can show _why_ a derived fact exists), or should the graph's derived-fact branch be removed as unreachable?~~ Resolved — see Decisions.
 - Should arity be enforced at match time only, or also validated up front (rule/check/policy patterns vs. known predicate arities) so mistakes surface as errors rather than silent non-matches?
+- All-reasons explain: show circular derivations (honest: every edge is a valid rule application; the graph shows the loop), mark them, or filter to non-circular reasons only (clearer for tutorials, but a correct filter is a real well-foundedness computation, not a cheap check)?
+- All-reasons explain: is a flat `fact → [derivations]` table acceptable for `:all` mode, while `true` keeps the nested tree — or should both modes switch to the flat table so there's one shape?
 
 ---
 
@@ -206,3 +208,22 @@ The architecture is clean and the fail-closed design is right. The core engine i
 
 - ~~2026-11-22 — Read-only review at v0.12.0; no files changed except this review. Tests were run (71 tests / 146 assertions, 0 failures) and every finding was reproduced empirically before being written down.~~ (Review method, not a decision; already stated in the header's **Method** line.)
 - 2026-11-23 — Arity in `unify*` is strict (equal length required); the lenient variant is the bypass itself.
+- 2026-11-23 — Explain carries rule-derivation proofs (option A): showing which rules and facts led to a decision is essential for debugging, audit, and tutorials. Details in **Rule proofs in explain** below.
+
+### Rule proofs in explain
+
+- **Record:** with `:explain? true`, the fixpoint keeps a side map `derived fact → {:rule :block :env :proof}`; no cost when explain is off.
+- **One proof per fact:** the first derivation found (the store already ignores later ones). That is "a reason", not every reason, and a proof only refers to earlier facts, so recursive rules can't create cycles.
+- **`:because`:** for a passing check, one proof node per matched body fact (fixes join checks being explained by their first pattern only). A derived fact expands to its rule, block, bindings and its own proof, down to stated facts; a stated fact is a leaf with its origin.
+- **`graph`:** uses the existing derived-fact branch; repeated facts become one node, so shared sub-proofs don't blow up the graph.
+- **Replaces** the planned finding-2 fix (map-shaped `:because`).
+
+### All reasons in explain (proposed, optional)
+
+Requested 2026-11-23: optionally show _every_ derivation of a fact, not just the first, for debugging, audit and tutorials.
+
+- **Option:** `:explain? :all` (`true` stays one reason per fact).
+- **Finding them is cheap:** the fixpoint re-fires every rule over every visible fact each round, so the final round enumerates every derivation over the final store. Recording them is a set per fact instead of a single entry.
+- **Catch — cycles:** with all derivations, proofs can loop. Edges `1→2`, `2→1` with a transitive `:path` rule: `[:path 1 2]` follows from `[:edge 1 2]`, but also from `[:path 1 1]` + `[:edge 1 2]`, and `[:path 1 1]` follows from `[:path 1 2]` + `[:edge 2 1]`. Each step is a valid rule application, but the pair is a circular "reason".
+- **So the shape changes:** a nested tree can't hold a cycle. In `:all` mode explain would carry a flat table `fact → [derivation …]`, with `:because` and each `:proof` referring to facts in it; `graph` already merges facts into single nodes, so it draws cycles as edges back to an existing node.
+- **Cost:** derivations can far outnumber facts (dense transitive closure). A cap — say `:max-derivations`, default 10 000 — that _truncates and flags_ `:truncated? true` rather than denying, since explain data never changes the decision.

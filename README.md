@@ -72,7 +72,11 @@ Like a stroopwafel: two layers with something sealed between them.
   of about 35 functions: comparison, arithmetic, `str/…`, collections,
   type predicates, regex. There is no `eval` and no namespace lookup.
 - **Explain.** `:explain? true` returns a proof tree, and `sw/graph` turns
-  it into nodes and edges.
+  it into nodes and edges. A check's `:because` lists every fact it
+  matched; a derived fact names the rule and block that produced it, its
+  bindings, and its own proof, down to the facts the blocks stated. Only
+  the first derivation found is kept, and a fact reached along several
+  paths is one graph node.
 
 ## Limits fail closed
 
