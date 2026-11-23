@@ -3,7 +3,47 @@
 All notable changes to stroopwafel. Each entry reflects committed work.
 History before 0.13.0 is in `context.md` (## History).
 
+## Unreleased (0.14.0)
+
+### Security
+
+- **An appended block could hide facts from the authorizer** (critical;
+  0.2.0 through 0.13.0). The fact store kept one origin set per fact —
+  the first derivation's, or the union when a fact was stated twice — so
+  a block appended to a token could give a fact an origin set the
+  authorizer cannot see. Behind a reject check or deny policy that fails
+  open: a revoked token became valid by appending a block that derived
+  the authorizer's `[:revoked …]` first, or restated its
+  `[:revocation-entry …]`. The store now keeps every minimal origin set
+  per fact, and a scope sees a fact through any of them. Details,
+  exploits and workarounds: `docs/security-advisory-2026-11-23-origin-hiding.md`.
+
+### Breaking
+
+- **Fact store shape:** `{fact #{origin-set …}}` (was `{fact
+  origin-set}`). `insert-fact` keeps minimal origin sets and never unions;
+  new `adds-origin?` and `origin-count`.
+- **`:max-facts` counts (fact, origin set) entries**, not distinct facts,
+  so appended blocks re-deriving the same facts cannot grow the store
+  without bound. Tokens whose facts hold several origin sets reach the
+  limit sooner.
+- **Explain:** the fact table reports `:origins` (a set of origin sets)
+  instead of `:origin`; each derivation carries the `:origin` it
+  produced. `graph` fact nodes have `:origins`; derivation nodes have
+  `:origin`.
+- Decisions change where a fact used to be hidden: tokens that wrongly
+  passed now deny, and tokens where a later block hid a block-0 fact from
+  the authorizer now pass.
+
+### Docs
+
+- README and `context.md` no longer claim block order "cannot change the
+  fixpoint" without qualification: it can't now that every origin set is
+  kept, but with one origin per fact it changed what each scope saw.
+
 ## 0.13.0 — 2026-11-23
+
+_Affected by the origin-hiding issue fixed in 0.14.0; don't deploy it._
 
 ### Breaking
 

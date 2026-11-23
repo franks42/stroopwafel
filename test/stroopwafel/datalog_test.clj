@@ -74,7 +74,7 @@
 
 (t/deftest eval-check-pass-test
   (let [fact-store
-        {[:can "alice" :read "file-1"] #{0}}
+        {[:can "alice" :read "file-1"] #{#{0}}}
         check {:id :c1
                :query [[:can "alice" :read "file-1"]]}
         result (sut/eval-check check fact-store)]
@@ -193,7 +193,7 @@
 
 (t/deftest reject-if-test
   (t/testing "Deny semantics: reject-if match = fail, no match = pass"
-    (let [store {[:admin "mallory"] #{0}}
+    (let [store {[:admin "mallory"] #{#{0}}}
           ;; reject-if matches -> fail
           check-reject {:id :deny-admin :kind :reject
                         :query [[:admin "mallory"]]}
@@ -335,28 +335,28 @@
 
 (t/deftest eval-check-with-when-pass-test
   (t/testing "Check passes when guard passes"
-    (let [store {[:time 500] #{:authorizer}}
+    (let [store {[:time 500] #{#{:authorizer}}}
           check '{:id :check-expiry :query [[:time ?t]] :when [(< ?t 1000)]}
           result (sut/eval-check check store)]
       (t/is (= :pass (:result result))))))
 
 (t/deftest eval-check-with-when-fail-test
   (t/testing "Check fails when pattern matches but guard fails"
-    (let [store {[:time 1500] #{:authorizer}}
+    (let [store {[:time 1500] #{#{:authorizer}}}
           check '{:id :check-expiry :query [[:time ?t]] :when [(< ?t 1000)]}
           result (sut/eval-check check store)]
       (t/is (= :fail (:result result))))))
 
 (t/deftest reject-if-with-when-test
   (t/testing "Reject-if with guard: match + guard pass = fail"
-    (let [store {[:time 1500] #{0} [:expiry 1000] #{0}}
+    (let [store {[:time 1500] #{#{0}} [:expiry 1000] #{#{0}}}
           check '{:id :reject-expired :kind :reject
                   :query [[:time ?t] [:expiry ?exp]]
                   :when [(>= ?t ?exp)]}
           result (sut/eval-check check store)]
       (t/is (= :fail (:result result)))))
   (t/testing "Reject-if with guard: match + guard fail = pass"
-    (let [store {[:time 500] #{0} [:expiry 1000] #{0}}
+    (let [store {[:time 500] #{#{0}} [:expiry 1000] #{#{0}}}
           check '{:id :reject-expired :kind :reject
                   :query [[:time ?t] [:expiry ?exp]]
                   :when [(>= ?t ?exp)]}
@@ -653,7 +653,7 @@
     (t/is (= '{?u "alice"} (:env (sut/unify '[:user ?u] [:user "alice"]))))))
 
 (t/deftest check-arity-mismatch-fails
-  (let [store {[:user "alice"] #{0}}]
+  (let [store {[:user "alice"] #{#{0}}}]
     (t/testing "check pattern longer than the fact does not pass"
       (t/is (= :fail (:result (sut/eval-check {:id :c :query '[[:user ?u ?role]]}
                                               store)))))
@@ -663,7 +663,7 @@
 
 (t/deftest reject-check-arity-mismatch-does-not-match
   (t/testing "a reject pattern of another arity does not match the fact"
-    (let [store {[:admin "mallory"] #{0}}]
+    (let [store {[:admin "mallory"] #{#{0}}}]
       (t/is (= :pass (:result (sut/eval-check {:id :r :kind :reject
                                                :query '[[:admin ?u ?x]]}
                                               store)))))))
@@ -697,7 +697,7 @@
       (t/is (= '{:variable ?x} data))))
   (t/testing "a guard error raised through eval-check carries no bound values"
     (let [data (try (sut/eval-check {:id :c :query '[[:user ?u]] :when '[(= ?x ?u)]}
-                                    {[:user "alice"] #{0}})
+                                    {[:user "alice"] #{#{0}}})
                     (catch clojure.lang.ExceptionInfo e (ex-data e)))]
       (t/is (= '{:variable ?x} data)))))
 
@@ -705,13 +705,47 @@
   (let [rules [[0 [{:id :r :head '[:can ?u] :body '[[:right ?u]]}]]]
         store (sut/insert-facts (sut/make-fact-store) [[:right "alice"]] #{0})]
     (t/testing "explain? records rule, block, bindings and proof per derived fact"
-      (t/is (= {[:can "alice"] [{:rule  :r
-                                 :block 0
-                                 :env   '{?u "alice"}
-                                 :proof [[:right "alice"]]}]}
+      (t/is (= {[:can "alice"] [{:rule   :r
+                                 :block  0
+                                 :origin #{0}
+                                 :env    '{?u "alice"}
+                                 :proof  [[:right "alice"]]}]}
                (:derivations (sut/fixpoint rules store :explain? true)))))
     (t/testing "without explain? nothing is recorded"
       (t/is (nil? (:derivations (sut/fixpoint rules store)))))
     (t/testing "apply-rules-scoped still returns the bare store"
-      (t/is (= {[:right "alice"] #{0} [:can "alice"] #{0}}
+      (t/is (= {[:right "alice"] #{#{0}} [:can "alice"] #{#{0}}}
                (sut/apply-rules-scoped rules store))))))
+
+(t/deftest store-keeps-minimal-origin-sets
+  (let [s0 (sut/insert-fact (sut/make-fact-store) [:f] #{0 1})]
+    (t/is (= {[:f] #{#{0 1}}} s0))
+    (t/testing "an incomparable origin set is kept alongside"
+      (t/is (= {[:f] #{#{0 1} #{:authorizer}}} (sut/insert-fact s0 [:f] #{:authorizer}))))
+    (t/testing "a subset replaces the supersets it subsumes"
+      (t/is (= {[:f] #{#{0}}} (sut/insert-fact s0 [:f] #{0}))))
+    (t/testing "a superset of a kept set adds nothing"
+      (t/is (identical? s0 (sut/insert-fact s0 [:f] #{0 1 2}))))
+    (t/testing "the same fact stated by two blocks keeps both origins (no union)"
+      (t/is (= {[:f] #{#{0} #{1}}}
+               (-> (sut/make-fact-store)
+                   (sut/insert-facts [[:f]] #{0})
+                   (sut/insert-facts [[:f]] #{1})))))))
+
+(t/deftest scope-sees-a-fact-through-any-visible-origin
+  (let [store (-> (sut/make-fact-store)
+                  (sut/insert-fact [:f] #{0 1})
+                  (sut/insert-fact [:f] #{:authorizer}))]
+    (t/is (= [[#{:authorizer} [:f]]] (sut/facts-for-scope store #{0 :authorizer})))
+    (t/is (= #{[#{0 1} [:f]] [#{:authorizer} [:f]]}
+             (set (sut/facts-for-scope store #{0 1 :authorizer}))))))
+
+(t/deftest max-facts-counts-origin-sets
+  (t/testing "appended blocks re-deriving the same facts cannot grow the store unbounded"
+    (let [base   {:facts [[:a 1] [:a 2] [:a 3]]}
+          copier (fn [_] {:rules '[{:id :copy :head [:b ?x] :body [[:a ?x]]}]})
+          token  {:blocks (into [base] (map copier) (range 6))}
+          result (sut/eval-token token :limits {:max-facts 15})]
+      (t/testing "6 blocks x 3 facts = 18 [:b] entries with distinct origins, plus 3 [:a]"
+        (t/is (false? (:valid? result)))
+        (t/is (= :max-facts (get-in result [:error :limit])))))))

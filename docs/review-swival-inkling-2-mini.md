@@ -15,6 +15,8 @@ This pass found **one authorization bypass**: `unify*` ignores arity, so pattern
 
 _Revised 2026-11-23 after a second-opinion check: findings re-ranked (arity is now #1), the arity finding corrected (it fails open for rules and policies, not only checks), explain-output gaps added as finding 5, duplicate suggestions merged, and open question 1 moved to Decisions._
 
+_Added 2026-11-23: finding 6 (critical) — an appended block could hide facts from the authorizer; see `docs/security-advisory-2026-11-23-origin-hiding.md`._
+
 ## What the project does
 
 - **Library**: a pure Datalog engine for authorization decisions. Facts, rules, checks and policies go in; `{:valid? …}` comes out. RFC-style Datalog over plain vectors, with origin sets tracking which block a fact came from.
@@ -71,6 +73,8 @@ Trusted origins per block:
 A fact is visible when its origin set is a subset of the trusted set. A later block can therefore add checks (restrict) but can never add facts the authorizer will see (expand). This is Biscuit's guarantee, and the tests pin it well.
 
 One subtlety worth documenting: within a round, blocks are processed in order, and later blocks see facts derived by earlier blocks in the *same* round (the store threads through the reduce). So block 1's rules can consume block 0's freshly derived facts in one round. It's a reasonable semantics, but it's asymmetric and currently undocumented.
+
+_2026-11-23: the ordering mattered more than it looked. Combined with one origin set per fact, it let an appended block derive a fact before the authorizer and hide it — see finding 6._
 
 ### The fixpoint and fail-closed limits
 
@@ -163,6 +167,12 @@ The checks happen in this order, so a fixpoint reached exactly at the limit is n
 
    Fix: return every check result plus the matching policy (id, kind, bindings) in explain mode.
 
+6. **An appended block can hide facts from the authorizer — authorization bypass** — _critical; found 2026-11-23 while starting semi-naive evaluation, after this review_. The fact store kept one origin set per fact: the first derivation's, or the union when a fact was stated twice. An appended block (which sees authorizer facts) could therefore give a fact an origin set the authorizer cannot see. Behind a reject check or deny policy, a hidden fact fails open: a **revoked token becomes valid**. Two ways, both reproduced on 0.9.0 through 0.13.0:
+   - derive the authorizer's `[:revoked "t1"]` first with a copy of its rule (blocks run before the authorizer in each round), so the authorizer's own derivation is skipped as a duplicate;
+   - restate the authorizer's `[:revocation-entry "t1"]` in the block, so its origin becomes the union `#{1 :authorizer}`.
+
+   It also hides non-security facts: block 1 deriving `[:c 1]` before block 0 does made a block-0 fact invisible to the authorizer. Fix: the store keeps every minimal origin set per fact, as Biscuit does; `:max-facts` counts (fact, origin set) entries. Full write-up, exploits and workarounds: `docs/security-advisory-2026-11-23-origin-hiding.md`.
+
 ### Minor / observations
 
 - **`normalize-facts` edge case** — a bare fact that is a 2-element vector whose first element is a set (`[#{0} [:foo]]`) would be misparsed as an already-normalized `[origin fact]` pair. Edge case; not reachable in practice for typical facts, but worth a comment or a guard.
@@ -213,6 +223,7 @@ The architecture is clean and the fail-closed design is right. The core engine i
 - 2026-11-23 — One flat explain shape for both `true` and `:all` (fact table + derivation nodes), replacing the nested tree: one format for consumers, and the only shape that can hold cycles.
 - 2026-11-23 — `:explain` is the whole decision (finding 5): every check, every evaluated policy, one fact table, and a `:reason`. A limit is a decision with `:reason :limit-exceeded`, so `graph` renders it (finding 3) instead of throwing.
 - 2026-11-23 — Pattern-length mismatches are validated up front: a pure `check-arity` for the PDP to run before policies enter the policy db, plus an `evaluate` option `:arity-check` — `:warn` (default; returns `:warnings`, the caller logs them), `:error` (deny), `:off`. It's essentially a bug, and a mismatched reject check or deny policy silently never fires (fail open). Not a DoS vector: a mismatch never matches and costs less; `:error` mode only denies the token or policy set that contains it — hence catch it at insert time.
+- 2026-11-23 — The fact store keeps every minimal origin set per fact (finding 6), fixing an authorization bypass before any other work: storing one origin per fact let an appended block hide authorizer facts. Semi-naive evaluation waits until this is in, since it rewrites the same code.
 
 ### Rule proofs in explain
 

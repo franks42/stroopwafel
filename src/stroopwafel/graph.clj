@@ -7,8 +7,9 @@
      - `:decision`     — the result and its reason (the root of a decision)
      - `:check`        — a check, with its block and result
      - `:policy`       — an evaluated policy: index, id, effect, result
-     - `:fact`         — a fact, with its origin and whether a block stated it
-     - `:derivation`   — one rule application: rule, block and bindings
+     - `:fact`         — a fact, with its origin sets and whether a block stated it
+     - `:derivation`   — one rule application: rule, block, the origin set it
+                         produced, and bindings
      - `:missing-fact` — the query of a check that found no match
 
    Edges:
@@ -110,7 +111,7 @@
                 [id state] (new-node state from label
                                      {:kind    :fact
                                       :fact    payload
-                                      :origin  (:origin entry)
+                                      :origins (:origins entry)
                                       :stated? (boolean (:stated? entry))})]
             (recur (assoc-in state [:seen payload] id)
                    facts
@@ -119,10 +120,10 @@
                          (rseq (vec (:derivations entry)))))))
 
         :derivation
-        (let [{:keys [rule block env proof]} payload
+        (let [{:keys [rule block origin env proof]} payload
               [id state] (new-node state from label
                                    {:kind :derivation :rule rule
-                                    :block block :env env})]
+                                    :block block :origin origin :env env})]
           (recur state facts
                  (into stack
                        (map (fn [f] [id :uses [:fact f]]))

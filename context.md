@@ -39,7 +39,12 @@ input.
    origins plus the deriving rule's block. Block 0 (the authority) and
    the authorizer see `#{0 :authorizer}`. Block N sees `#{0 N
    :authorizer}`. This is Biscuit's guarantee: later blocks can restrict
-   authority but never expand it.
+   authority but never expand it. The store maps each fact to the set of
+   minimal origin sets it was found with (`{fact #{origin-set …}}`), and a
+   scope sees the fact through any of them. Until 0.14.0 it kept one origin
+   set per fact (the first derivation's, or a union), which let an
+   appended block hide authorizer facts behind reject checks and deny
+   policies: `docs/security-advisory-2026-11-23-origin-hiding.md`.
 2. **Rules** run to a fixpoint, so recursion and transitive closure work.
    `:limits` (default `{:max-iterations 100 :max-facts 1000}`) bound it.
    Reaching a limit first throws inside `fixpoint`, and
@@ -49,8 +54,9 @@ input.
    (`:max-derivations`, default 10 000, only caps explain data and never
    denies.) Each round runs the blocks in order, then the authorizer, and
    a block sees facts derived earlier in the same round. With no negation
-   in rule bodies, the order cannot change the fixpoint, only the round
-   count and which derivation `:explain? true` keeps.
+   in rule bodies, and every origin set kept (item 1), the order cannot
+   change what any scope sees, only the round count and which derivation
+   `:explain? true` keeps. `:max-facts` counts (fact, origin set) entries.
 3. **Checks.** `:one` (the default, check-if) passes on a match. `:reject`
    (reject-if) passes when there is no match. Rule bodies have no
    negation; negative constraints are expressed as reject checks and deny
