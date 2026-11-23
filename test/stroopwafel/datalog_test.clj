@@ -704,10 +704,10 @@
   (let [rules [[0 [{:id :r :head '[:can ?u] :body '[[:right ?u]]}]]]
         store (sut/insert-facts (sut/make-fact-store) [[:right "alice"]] #{0})]
     (t/testing "explain? records rule, block, bindings and proof per derived fact"
-      (t/is (= {[:can "alice"] {:rule  :r
-                                :block 0
-                                :env   '{?u "alice"}
-                                :proof [{:type :fact :fact [:right "alice"] :origin #{0}}]}}
+      (t/is (= {[:can "alice"] [{:rule  :r
+                                 :block 0
+                                 :env   '{?u "alice"}
+                                 :proof [[:right "alice"]]}]}
                (:derivations (sut/fixpoint rules store :explain? true)))))
     (t/testing "without explain? nothing is recorded"
       (t/is (nil? (:derivations (sut/fixpoint rules store)))))

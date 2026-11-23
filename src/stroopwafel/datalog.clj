@@ -365,9 +365,15 @@
 
 (def default-limits
   "Fixpoint limits: `:max-iterations` rounds of rule application, and
-   `:max-facts` facts in the store (input and derived)."
-  {:max-iterations 100
-   :max-facts      1000})
+   `:max-facts` facts in the store (input and derived). Reaching either
+   denies.
+
+   `:max-derivations` caps how many derivations explain records. It only
+   bounds explain data: reaching it stops recording and flags the explain
+   `:truncated? true`, but never changes the decision."
+  {:max-iterations  100
+   :max-facts       1000
+   :max-derivations 10000})
 
 (defn validate-limits
   "Returns `limits` merged over `default-limits`; throws on unknown keys or
@@ -377,7 +383,7 @@
   (let [unknown (remove (set (keys default-limits)) (keys limits))
         bad     (remove (fn [[_ v]] (pos-int? v)) limits)]
     (when (or (seq unknown) (seq bad))
-      (throw (ex-info "Invalid limits: keys must be :max-iterations or :max-facts, values positive integers"
+      (throw (ex-info "Invalid limits: keys must be :max-iterations, :max-facts or :max-derivations, values positive integers"
                       {:limits limits :unknown (vec unknown) :bad (into {} bad)})))
     (merge default-limits limits)))
 
@@ -389,13 +395,30 @@
             :facts             (fact-count store)
             :iterations        iterations}))
 
+(defn- record-derivation
+  "Adds derivation `d` of `fact` to explain state `ex`
+   `{:derivations :count :max :truncated?}` unless already recorded or the
+   cap is reached (which flags `:truncated?`)."
+  [ex fact d]
+  (let [ds (get-in ex [:derivations fact] [])]
+    (cond
+      (some #{d} ds)          ex
+      (>= (:count ex) (:max ex)) (assoc ex :truncated? true)
+      :else                   (-> ex
+                                  (assoc-in [:derivations fact] (conj ds d))
+                                  (update :count inc)))))
+
 (defn- derive-round
   "One round of the fixpoint: fires every block's rules in order, threading
    the store so later blocks see earlier blocks' facts from this round.
-   A fact already in the store is never re-derived, so the first derivation
-   found is the one kept. When `derivations` is a map (explain mode), each new
-   fact's `{:rule :block :env :proof}` is recorded in it."
-  [indexed-rules store derivations authorizer-scope]
+   A fact already in the store is never re-inserted.
+
+   `ex` is explain state (nil when explain is off). In `:first` mode it
+   records each new fact's derivation — the first one found. In `:all`
+   mode it records every distinct derivation, including of facts already
+   in the store; since each round re-fires every rule over every visible
+   fact, the final round finds them all."
+  [indexed-rules store ex authorizer-scope]
   (reduce
    (fn [acc [block-idx rules]]
      (let [trusted (if (and (= block-idx :authorizer) authorizer-scope)
@@ -406,27 +429,34 @@
         (fn [acc rule]
           (reduce
            (fn [acc {:keys [fact origin env proof] rule-id :rule}]
-             (if (contains? (:store acc) fact)
-               acc
-               (cond-> (update acc :store insert-fact fact origin)
-                 (:derivations acc)
-                 (assoc-in [:derivations fact] {:rule  rule-id
-                                                :block block-idx
-                                                :env   env
-                                                :proof proof}))))
+             (let [new? (not (contains? (:store acc) fact))
+                   ex   (:ex acc)]
+               (cond-> acc
+                 new?
+                 (update :store insert-fact fact origin)
+
+                 (and ex (or new? (= :all (:mode ex))))
+                 (update :ex record-derivation fact
+                         {:rule  rule-id
+                          :block block-idx
+                          :env   env
+                          :proof (mapv :fact proof)}))))
            acc
            (fire-rule rule visible block-idx)))
         acc rules)))
-   {:store store :derivations derivations}
+   {:store store :ex ex}
    indexed-rules))
 
 (defn fixpoint
   "Applies rules per-block with scope filtering, running to fixpoint.
-   Returns `{:store fact-store :derivations derivations}`.
+   Returns `{:store fact-store :derivations derivations :truncated? bool}`.
 
-   With `:explain? true`, `:derivations` maps each derived fact to the
-   first derivation found — `{:rule :block :env :proof}` — so explain
-   can show which rule produced it from which facts. Without it,
+   `:derivations` maps a fact to a vector of `{:rule :block :env :proof}`,
+   where `:proof` is the facts the rule body matched. With `:explain? true`
+   it holds the first derivation of each derived fact; with
+   `:explain? :all`, every distinct derivation of every fact — circular
+   ones included. Recording stops at `:max-derivations` (see
+   `default-limits`) and sets `:truncated?`. Without `:explain?`,
    `:derivations` is nil and nothing extra is kept.
 
    `indexed-rules` is a sequence of `[block-index rules]` pairs.
@@ -444,15 +474,20 @@
    over a missing fact would pass, so it must never be evaluated."
   [indexed-rules store & {:keys [authorizer-scope limits explain?]}]
   (let [{:keys [max-iterations max-facts] :as limits} (validate-limits limits)]
-    (loop [store       store
-           derivations (when explain? {})
-           iteration   0]
-      (let [{new-store :store derivations :derivations}
-            (derive-round indexed-rules store derivations authorizer-scope)
+    (loop [store     store
+           ex        (when explain?
+                       {:mode        (if (= :all explain?) :all :first)
+                        :derivations {}
+                        :count       0
+                        :max         (:max-derivations limits)})
+           iteration 0]
+      (let [{new-store :store ex :ex}
+            (derive-round indexed-rules store ex authorizer-scope)
             rounds (inc iteration)]
         (cond
           (= (fact-count new-store) (fact-count store))
-          {:store new-store :derivations derivations}
+          (cond-> {:store new-store :derivations (:derivations ex)}
+            (:truncated? ex) (assoc :truncated? true))
 
           (> (fact-count new-store) max-facts)
           (throw (limit-exceeded :max-facts limits new-store rounds))
@@ -461,7 +496,7 @@
           (throw (limit-exceeded :max-iterations limits new-store rounds))
 
           :else
-          (recur new-store derivations rounds))))))
+          (recur new-store ex rounds))))))
 
 (defn apply-rules-scoped
   "Like `fixpoint`, but returns only the resulting fact store.
@@ -479,30 +514,26 @@
                    (facts-for-scope fact-store scope)
                    (into [] (map (fn [[fact origin]] [origin fact])) fact-store))})
 
-(defn proof-nodes
-  "Turns a match's `:proof` (the facts its body matched) into explain nodes.
-
-   A stated fact is a leaf `{:fact :origin}`. A derived fact found in
-   `derivations` (see `fixpoint`) becomes
-   `{:fact :origin :rule :block :env :proof [child nodes]}`, expanded down to
-   stated facts. Proofs only refer to facts that existed before the fact they
-   prove, so expansion terminates; nodes are memoized, so a fact shared by
-   several proof paths is built once and shared."
-  [derivations proof]
-  (let [memo (volatile! {})]
-    (letfn [(node [{:keys [fact origin]}]
-              (or (get @memo [fact origin])
-                  (let [n (if-let [{:keys [rule block env proof]} (get derivations fact)]
-                            {:fact   fact
-                             :origin origin
-                             :rule   rule
-                             :block  block
-                             :env    env
-                             :proof  (mapv node proof)}
-                            {:fact fact :origin origin})]
-                    (vswap! memo assoc [fact origin] n)
-                    n)))]
-      (mapv node proof))))
+(defn explain-facts
+  "The explain fact table for `roots`: every fact reachable from them
+   through derivation proofs, each once, as
+   `{fact {:origin o :stated? true :derivations [{:rule :block :env :proof}]}}`.
+   `:stated?` is present when a block or the authorizer stated the fact;
+   `:derivations` when a rule derived it. Proofs may refer back to facts
+   already in the table — that is how circular derivations appear."
+  [roots fact-store derivations stated]
+  (loop [todo  (vec roots)
+         table {}]
+    (if-let [fact (peek todo)]
+      (if (contains? table fact)
+        (recur (pop todo) table)
+        (let [ds    (get derivations fact)
+              entry (cond-> {:origin (get fact-store fact)}
+                      (contains? stated fact) (assoc :stated? true)
+                      (seq ds)                (assoc :derivations ds))]
+          (recur (into (pop todo) (mapcat :proof) ds)
+                 (assoc table fact entry))))
+      table)))
 
 (defn eval-check
   "Evaluates a single authorization check against a fact store.
@@ -514,11 +545,13 @@
    and includes them in the explain output for audit/debug visibility.
    When false (default), uses early termination for performance.
 
-   Accepts optional `derivations` (from `fixpoint` with `:explain? true`).
-   A passing check's `:because`, and a failing reject check's, is a vector
-   of `proof-nodes`, one per fact the body matched; derived facts expand
-   to the rules that produced them. Without `derivations`, every node is
-   a `{:fact :origin}` leaf.
+   Accepts an optional explain context `ctx` (see `eval-token`):
+   `{:mode :first|:all :derivations {…} :stated store :truncated? bool}`.
+   When a check passes, or a reject check fails, the explain carries:
+     - `:because` — the matched facts: of the first match in `:first` mode,
+       of every match in `:all` mode;
+     - `:matches` — every match as `{:env :origin :facts}` (explain only);
+     - `:facts`   — the fact table for `:because` (see `explain-facts`).
 
    Supports `:kind`:
      - `:one` (default, check-if): passes if >= 1 match
@@ -529,7 +562,7 @@
    (eval-check check fact-store scope false))
   ([check fact-store scope explain?]
    (eval-check check fact-store scope explain? nil))
-  ([{:keys [id query kind] guards :when} fact-store scope explain? derivations]
+  ([{:keys [id query kind] guards :when} fact-store scope explain? ctx]
    (let [{:keys [origin-facts]} (scope-visible-facts fact-store scope)
          ;; Lazy seq — only realize what we need
          matches (cond->> (eval-body query origin-facts)
@@ -538,16 +571,32 @@
          ;; Otherwise, early termination via first
          all-matches (when explain? (doall matches))
          first-match (if explain? (first all-matches) (first matches))
-         reject? (= kind :reject)]
+         reject? (= kind :reject)
+         evidence
+         (fn [explain]
+           (let [because (if (= :all (:mode ctx))
+                           (into [] (comp (mapcat #(map :fact (:proof %))) (distinct))
+                                 all-matches)
+                           (mapv :fact (:proof first-match)))]
+             (cond-> (assoc explain :because because)
+               all-matches
+               (assoc :matches (mapv (fn [{:keys [env origin proof]}]
+                                       {:env env :origin origin
+                                        :facts (mapv :fact proof)})
+                                     all-matches))
+               ctx
+               (assoc :facts (explain-facts because fact-store
+                                            (:derivations ctx) (:stated ctx)))
+               (:truncated? ctx)
+               (assoc :truncated? true))))]
      (cond
        ;; reject-if: match means FAIL
        (and reject? first-match)
        {:result  :fail
-        :explain {:type     :check
-                  :check-id id
-                  :result   :fail
-                  :rejected query
-                  :because  (proof-nodes derivations (:proof first-match))}}
+        :explain (evidence {:type     :check
+                            :check-id id
+                            :result   :fail
+                            :rejected query})}
 
        ;; reject-if: no match means PASS (nothing matched, so no evidence)
        (and reject? (nil? first-match))
@@ -560,17 +609,9 @@
        ;; check-if: match means PASS
        first-match
        {:result  :pass
-        :explain (cond-> {:type     :check
-                          :check-id id
-                          :result   :pass
-                          :because  (proof-nodes derivations (:proof first-match))}
-                   ;; In explain mode, include all solutions
-                   all-matches
-                   (assoc :all-matches
-                          (mapv (fn [{:keys [env origin]}]
-                                  {:env env :origin origin
-                                   :fact (instantiate (first query) env)})
-                                all-matches)))}
+        :explain (evidence {:type     :check
+                            :check-id id
+                            :result   :pass})}
 
        ;; check-if: no match means FAIL
        :else
@@ -628,8 +669,8 @@
    (map (fn [c] (eval-check c store scope false)) checks))
   ([checks store scope explain?]
    (eval-checks checks store scope explain? nil))
-  ([checks store scope explain? derivations]
-   (map (fn [c] (eval-check c store scope explain? derivations)) checks)))
+  ([checks store scope explain? ctx]
+   (map (fn [c] (eval-check c store scope explain? ctx)) checks)))
 
 (defn eval-token
   "Evaluates an authorization token with per-block scope isolation.
@@ -649,14 +690,20 @@
      - `:checks` — additional authorizer checks
      - `:rules`  — additional authorizer rules
 
-   Accepts optional `:limits` (`:max-iterations`, `:max-facts`) over
-   `default-limits`. Reaching a limit before the fixpoint denies.
+   Accepts optional `:limits` (`:max-iterations`, `:max-facts`,
+   `:max-derivations`) over `default-limits`. Reaching `:max-iterations` or
+   `:max-facts` before the fixpoint denies; `:max-derivations` only
+   truncates explain data.
+
+   `:explain?` is `true` (one derivation per fact, the first found) or
+   `:all` (every derivation, circular ones included). Both produce the same
+   flat shape: see `eval-check`.
 
    Returns:
    |||
    |:-|:-|
    | `:valid?`  | boolean authorization decision
-   | `:explain` | optional proof tree when :explain? is enabled
+   | `:explain` | optional explain map when :explain? is enabled
    | `:error`   | when a limit was reached: `{:type :limit-exceeded :limit :max :facts :iterations}`"
   [{:keys [blocks] :as _token}
    & {:keys [explain? authorizer trusted-block-indices limits]}]
@@ -686,7 +733,9 @@
 
         ;; 4. Apply rules to fixpoint with scope filtering. A limit
         ;;    reached first denies: the partial store is never evaluated.
-        {:keys [store derivations error]}
+        stated store
+
+        {:keys [store derivations truncated? error]}
         (try
           (fixpoint indexed-rules store
                     :authorizer-scope authorizer-scope
@@ -702,13 +751,20 @@
     (if error
       (cond-> {:valid? false :error error}
         explain? (assoc :explain error))
-      (let [;; 5. Evaluate checks per block with scoped visibility
+      (let [;; Explain context for checks: what the fixpoint recorded
+            ctx (when explain?
+                  {:mode        (if (= :all explain?) :all :first)
+                   :derivations derivations
+                   :stated      stated
+                   :truncated?  truncated?})
+
+            ;; 5. Evaluate checks per block with scoped visibility
             block-results
             (mapcat
              (fn [idx]
                (let [block (nth blocks idx)
                      scope (trusted-origins idx)]
-                 (eval-checks (:checks block) store scope explain? derivations)))
+                 (eval-checks (:checks block) store scope explain? ctx)))
              (range (count blocks)))
 
             ;; 6. Evaluate authorizer checks (with extended scope if trusted blocks)
@@ -716,7 +772,7 @@
 
             authorizer-results
             (when (:checks authorizer)
-              (eval-checks (:checks authorizer) store auth-scope explain? derivations))
+              (eval-checks (:checks authorizer) store auth-scope explain? ctx))
 
             all-results (concat block-results authorizer-results)
             failed (first (filter #(= :fail (:result %)) all-results))

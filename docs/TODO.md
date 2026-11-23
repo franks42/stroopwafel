@@ -12,7 +12,8 @@ From `docs/review-swival-inkling-2-mini.md` (revised 2026-11-23), in priority or
 - [ ] End-to-end `evaluate` → `graph` tests — README example, limit-exceeded, reject-pass check, token with no checks (derived-fact, join, shared-fact, reject-pass and reject-fail cases done; limit-exceeded and no-checks wait on findings 3 and 5)
 - [ ] Explain shows the full decision — every check result, the deciding policy (id, kind, bindings), non-nil when there are no checks (datalog.clj:660–676); finding 5
 - [x] Rule proofs in explain — thread `:proof` through, or remove the unreachable derived-fact branch in `graph.clj`; decided: option A, see review Decisions
-- [ ] All-reasons explain (`:explain? :all`) — every derivation per fact, flat table, derivation cap; waiting on the two open questions in the review
+- [x] All-reasons explain (`:explain? :all`) — every derivation per fact, flat table, derivation cap; decided: show circular reasons, one flat shape for both modes
+- [ ] Semi-naive fixpoint — rules re-fire over every fact each round; a 400-step chain takes ~9 s (JVM) with or without explain, ~40 s on bb
 - [ ] CI — GitHub Actions running `clojure -X:test` on push/PR
 - [ ] `deps.edn` — remove the nonexistent `"resources"` path
 - [ ] Test `authorizer-with-signers` when the authorizer has no `:facts`
