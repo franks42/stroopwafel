@@ -195,7 +195,7 @@ The architecture is clean and the fail-closed design is right. The core engine i
 
 - ~~Should the arity-mismatch fix be strict (require equal arity) or lenient (allow fewer-element patterns to match, ignoring extra fact elements)? Strict is the safer default for an authorization engine.~~ Resolved — see Decisions.
 - Should "no policies → allow" stay as-is, or become deny (fail closed)?
-- Should the limit-exceeded explain tree be handled in `graph`, or should `graph` simply reject it with a clearer error?
+- ~~Should the limit-exceeded explain tree be handled in `graph`, or should `graph` simply reject it with a clearer error?~~ Resolved by finding 5's decision shape — see Decisions.
 - ~~Should `eval-check` always emit map-shaped `:because` nodes, or should `graph` handle bare origin sets? (Both are valid; the first is cleaner.)~~ Superseded — `:because` becomes proof nodes; see Decisions.
 - ~~Should the explain tree carry rule-derivation proofs (so the graph can show _why_ a derived fact exists), or should the graph's derived-fact branch be removed as unreachable?~~ Resolved — see Decisions.
 - Should arity be enforced at match time only, or also validated up front (rule/check/policy patterns vs. known predicate arities) so mistakes surface as errors rather than silent non-matches?
@@ -211,6 +211,7 @@ The architecture is clean and the fail-closed design is right. The core engine i
 - 2026-11-23 — Explain carries rule-derivation proofs (option A): showing which rules and facts led to a decision is essential for debugging, audit, and tutorials. Details in **Rule proofs in explain** below.
 - 2026-11-23 — `:explain? :all` shows every derivation, circular ones included: tutorials should show circular reasons, not hide them, and every step is a valid rule application.
 - 2026-11-23 — One flat explain shape for both `true` and `:all` (fact table + derivation nodes), replacing the nested tree: one format for consumers, and the only shape that can hold cycles.
+- 2026-11-23 — `:explain` is the whole decision (finding 5): every check, every evaluated policy, one fact table, and a `:reason`. A limit is a decision with `:reason :limit-exceeded`, so `graph` renders it (finding 3) instead of throwing.
 
 ### Rule proofs in explain
 
@@ -247,3 +248,24 @@ Requested 2026-11-23: optionally show _every_ derivation of a fact, not just the
 - `:because`: with `true`, the facts of the first match; with `:all`, every fact of every match.
 - `:facts`: every fact reachable from `:because` through `:proof`, each once; cycles are just facts referring back.
 - `graph`: nodes `:check`, `:fact`, `:derivation`, `:missing-fact`; edges check `:because`/`:rejected-by`/`:missing` → fact, fact `:derived-by` → derivation, derivation `:uses` → fact. A derivation node keeps a rule's premises together, so two derivations of one fact stay distinct.
+
+### Decision explain (finding 5)
+
+`evaluate` with `:explain?` returns
+
+```clojure
+{:type     :decision
+ :result   :allow                ; or :deny — always agrees with :valid?
+ :reason   :policy               ; :check-failed :no-policies :no-matching-policy :limit-exceeded
+ :checks   [{:type :check :check-id :c :block 0 :result :pass :because [...] :matches [...]} …]
+ :policies [{:index 0 :id :p :kind :deny :query [...] :result :no-match}
+            {:index 1 :kind :allow :query [...] :result :matched :because [...] :matches [...]}]
+ :facts    {fact {…}}            ; one table for every check and the deciding policy
+ :truncated? true}               ; only when the derivation cap was hit
+```
+
+- `:checks`: every check, in evaluation order (blocks, then authorizer), `:block` = index or `:authorizer`.
+- `:policies`: evaluated in order up to and including the first match; empty when a check failed (policies don't run).
+- A limit gives `{:type :decision :result :deny :reason :limit-exceeded :error {…}}`.
+- The decision and the explain come from one `decide` function, so the explain can't disagree with `:valid?`.
+- `graph` root is a `:decision` node with `:check` and `:policy` edges; a matched policy has `:because` edges to its facts.

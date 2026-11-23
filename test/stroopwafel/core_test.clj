@@ -363,15 +363,20 @@
 (defn- nodes-of-kind [graph kind]
   (filter #(= kind (:kind %)) (vals (:nodes graph))))
 
-(t/deftest explain-flat-shape
+(t/deftest explain-decision-shape
   (t/is (= {:valid?  true
-            :explain {:type     :check
-                      :check-id :alice-can-read
-                      :result   :pass
-                      :because  [[:can "alice" :read "file-1"]]
-                      :matches  [{:env    {}
-                                  :origin #{0 1}
-                                  :facts  [[:can "alice" :read "file-1"]]}]
+            :explain {:type     :decision
+                      :result   :allow
+                      :reason   :no-policies
+                      :checks   [{:type     :check
+                                  :check-id :alice-can-read
+                                  :block    1
+                                  :result   :pass
+                                  :because  [[:can "alice" :read "file-1"]]
+                                  :matches  [{:env    {}
+                                              :origin #{0 1}
+                                              :facts  [[:can "alice" :read "file-1"]]}]}]
+                      :policies []
                       :facts    {[:can "alice" :read "file-1"]
                                  {:origin      #{0 1}
                                   :derivations [{:rule  :can-from-right
@@ -384,17 +389,19 @@
 
 (t/deftest graph-renders-evaluate-output
   (let [graph (sut/graph (:explain (sut/evaluate delegation-token :explain? true)))]
-    (t/is (= {:n1 {:id :n1 :kind :check :check-id :alice-can-read :result :pass}
-              :n2 {:id :n2 :kind :fact :fact [:can "alice" :read "file-1"]
+    (t/is (= {:n1 {:id :n1 :kind :decision :result :allow :reason :no-policies}
+              :n2 {:id :n2 :kind :check :check-id :alice-can-read :block 1 :result :pass}
+              :n3 {:id :n3 :kind :fact :fact [:can "alice" :read "file-1"]
                    :origin #{0 1} :stated? false}
-              :n3 {:id :n3 :kind :derivation :rule :can-from-right :block 1
+              :n4 {:id :n4 :kind :derivation :rule :can-from-right :block 1
                    :env '{?u "alice" ?a :read ?r "file-1"}}
-              :n4 {:id :n4 :kind :fact :fact [:right "alice" :read "file-1"]
+              :n5 {:id :n5 :kind :fact :fact [:right "alice" :read "file-1"]
                    :origin #{0} :stated? true}}
              (:nodes graph)))
-    (t/is (= [{:from :n1 :to :n2 :label :because}
-              {:from :n2 :to :n3 :label :derived-by}
-              {:from :n3 :to :n4 :label :uses}]
+    (t/is (= [{:from :n1 :to :n2 :label :check}
+              {:from :n2 :to :n3 :label :because}
+              {:from :n3 :to :n4 :label :derived-by}
+              {:from :n4 :to :n5 :label :uses}]
              (:edges graph)))
     (t/is (= :n1 (:root graph)))))
 
@@ -404,7 +411,7 @@
                           :checks [{:id    :join
                                     :query '[[:user ?u] [:right ?u :read]]}]}]}]
     (t/is (= [[:user "alice"] [:right "alice" :read]]
-             (get-in (sut/evaluate token :explain? true) [:explain :because])))))
+             (get-in (sut/evaluate token :explain? true) [:explain :checks 0 :because])))))
 
 (t/deftest graph-shares-repeated-facts
   (t/testing "a fact reached along two proof paths is one node"
@@ -429,10 +436,12 @@
         result (sut/evaluate token :explain? true)
         graph  (sut/graph (:explain result))]
     (t/is (false? (:valid? result)))
-    (t/is (= [[:admin "mallory"]] (get-in result [:explain :because])))
+    (t/is (= [[:admin "mallory"]] (get-in result [:explain :checks 0 :because])))
     (t/is (= {[:admin "mallory"] {:origin #{0} :stated? true}}
              (get-in result [:explain :facts])))
-    (t/is (= [{:from :n1 :to :n2 :label :rejected-by}] (:edges graph)))))
+    (t/is (= [{:from :n1 :to :n2 :label :check}
+              {:from :n2 :to :n3 :label :rejected-by}]
+             (:edges graph)))))
 
 (t/deftest reject-pass-graph-has-only-the-check
   (let [token {:blocks [{:facts  [[:user "alice"]]
@@ -440,8 +449,8 @@
                          :checks [{:id :no-admin :kind :reject
                                    :query '[[:admin ?u]]}]}]}
         graph (sut/graph (:explain (sut/evaluate token :explain? true)))]
-    (t/is (= 1 (count (:nodes graph))))
-    (t/is (empty? (:edges graph)))))
+    (t/is (= #{:decision :check} (set (map :kind (vals (:nodes graph))))))
+    (t/is (= [{:from :n1 :to :n2 :label :check}] (:edges graph)))))
 
 ;; --- :explain? :all — every reason -----------------------------------------
 
@@ -514,7 +523,7 @@
                          :rules  []
                          :checks [{:id :c :query '[[:right ?u :read]]}]}]}
         because (fn [mode] (set (get-in (sut/evaluate token :explain? mode)
-                                        [:explain :because])))]
+                                        [:explain :checks 0 :because])))]
     (t/is (= 1 (count (because true))))
     (t/is (= #{[:right "alice" :read] [:right "bob" :read]} (because :all)))))
 
@@ -529,3 +538,133 @@
     (t/is (true? (:valid? capped)) "the cap never changes the decision")
     (t/is (true? (get-in capped [:explain :truncated?])))
     (t/is (nil? (get-in full [:explain :truncated?])))))
+
+;; --- Finding 5: explain shows the whole decision ---------------------------
+
+(def ^:private policy-token
+  {:blocks [{:facts  [[:right "alice" :read "file-1"]]
+             :rules  []
+             :checks [{:id :has-right :query '[[:right ?u :read ?r]]}]}]})
+
+(t/deftest explain-names-the-deciding-allow-policy
+  (let [explain (:explain (sut/evaluate policy-token :explain? true
+                                        :authorizer
+                                        {:facts    [[:user "alice"]]
+                                         :checks   [{:id :is-user :query '[[:user ?u]]}]
+                                         :policies [{:id    :no-banned
+                                                     :kind  :deny
+                                                     :query '[[:banned ?u]]}
+                                                    {:kind  :allow
+                                                     :query '[[:right ?u :read "file-1"]]}]}))]
+    (t/is (= [:allow :policy] ((juxt :result :reason) explain)))
+    (t/testing "every check, with its block"
+      (t/is (= [[:has-right 0 :pass] [:is-user :authorizer :pass]]
+               (mapv (juxt :check-id :block :result) (:checks explain)))))
+    (t/testing "every evaluated policy, in order; the decider carries its evidence"
+      (t/is (= [{:index 0 :id :no-banned :kind :deny :query '[[:banned ?u]]
+                 :result :no-match}
+                {:index   1 :kind :allow :query '[[:right ?u :read "file-1"]]
+                 :result  :matched
+                 :because [[:right "alice" :read "file-1"]]
+                 :matches [{:env '{?u "alice"} :origin #{0}
+                            :facts [[:right "alice" :read "file-1"]]}]}]
+               (:policies explain))))
+    (t/testing "one fact table for checks and policy"
+      (t/is (= #{[:right "alice" :read "file-1"] [:user "alice"]}
+               (set (keys (:facts explain))))))))
+
+(t/deftest explain-names-the-deciding-deny-policy
+  (let [explain (:explain (sut/evaluate policy-token :explain? true
+                                        :authorizer
+                                        {:policies [{:id :deny-reads :kind :deny
+                                                     :query '[[:right ?u :read ?r]]}
+                                                    {:id :allow-all :kind :allow
+                                                     :query '[[:right ?u ?a ?r]]}]}))]
+    (t/is (= [:deny :policy] ((juxt :result :reason) explain)))
+    (t/is (= [[:deny-reads :matched]] (mapv (juxt :id :result) (:policies explain)))
+          "policies after the decider are not evaluated, so not listed")))
+
+(t/deftest explain-no-matching-policy
+  (let [explain (:explain (sut/evaluate policy-token :explain? true
+                                        :authorizer
+                                        {:policies [{:id :p :kind :allow
+                                                     :query '[[:admin ?u]]}]}))]
+    (t/is (= [:deny :no-matching-policy] ((juxt :result :reason) explain)))
+    (t/is (= [[:p :no-match]] (mapv (juxt :id :result) (:policies explain))))))
+
+(t/deftest explain-lists-every-check-when-one-fails
+  (let [token   {:blocks [{:facts  [[:user "alice"]]
+                           :rules  []
+                           :checks [{:id :a :query '[[:admin ?u]]}
+                                    {:id :b :query '[[:user ?u]]}
+                                    {:id :c :query '[[:owner ?u]]}]}]}
+        explain (:explain (sut/evaluate token :explain? true
+                                        :authorizer {:policies [{:kind :allow
+                                                                 :query '[[:user ?u]]}]}))]
+    (t/is (= [:deny :check-failed] ((juxt :result :reason) explain)))
+    (t/is (= [[:a :fail] [:b :pass] [:c :fail]]
+             (mapv (juxt :check-id :result) (:checks explain))))
+    (t/is (= [] (:policies explain)) "policies are not evaluated after a failed check")))
+
+(t/deftest explain-without-checks-is-not-nil
+  (let [explain (:explain (sut/evaluate {:blocks [{:facts [[:user "alice"]]}]}
+                                        :explain? true
+                                        :authorizer {:policies [{:kind :allow
+                                                                 :query '[[:user ?u]]}]}))]
+    (t/is (= [:allow :policy []] ((juxt :result :reason :checks) explain)))))
+
+(t/deftest explain-and-graph-at-a-limit
+  (let [token  {:blocks [{:facts [[:edge 0 1] [:edge 1 2] [:edge 2 3]]
+                          :rules '[{:id :r :head [:reach ?a ?b] :body [[:edge ?a ?b]]}
+                                   {:id :t :head [:reach ?a ?c]
+                                    :body [[:reach ?a ?b] [:edge ?b ?c]]}]}]}
+        result (sut/evaluate token :explain? true :limits {:max-facts 5})
+        graph  (sut/graph (:explain result))]
+    (t/is (= {:type   :decision
+              :result :deny
+              :reason :limit-exceeded
+              :error  (:error result)}
+             (:explain result)))
+    (t/is (= {:n1 {:id :n1 :kind :decision :result :deny :reason :limit-exceeded}}
+             (:nodes graph)))))
+
+(t/deftest graph-shows-checks-and-policies
+  (let [graph (sut/graph (:explain (sut/evaluate policy-token :explain? true
+                                                 :authorizer
+                                                 {:policies [{:id :nope :kind :deny
+                                                              :query '[[:banned ?u]]}
+                                                             {:id :ok :kind :allow
+                                                              :query '[[:right ?u :read ?r]]}]})))
+        node  (fn [id] (get-in graph [:nodes id]))]
+    (t/is (= [{:from :n1 :to :n2 :label :check}
+              {:from :n2 :to :n3 :label :because}
+              {:from :n1 :to :n4 :label :policy}
+              {:from :n1 :to :n5 :label :policy}
+              {:from :n5 :to :n3 :label :because}]
+             (:edges graph)))
+    (t/is (= {:id :n4 :kind :policy :index 0 :policy-id :nope :effect :deny :result :no-match}
+             (node :n4)))
+    (t/is (= {:id :n5 :kind :policy :index 1 :policy-id :ok :effect :allow :result :matched}
+             (node :n5)))))
+
+(t/deftest readme-example-explains-and-graphs
+  (let [token  {:blocks [{:facts [[:right "alice" :read "/api/data"]
+                                  [:right "alice" :write "/api/data"]]
+                          :rules '[{:id   :can
+                                    :head [:can ?u ?a ?r]
+                                    :body [[:right ?u ?a ?r]]}]}
+                         {:checks '[{:id :read-only :query [[:can ?u :read ?r]]}]}]}
+        result (sut/evaluate token :explain? true
+                             :authorizer {:facts    [[:time 1000]
+                                                     [:request "alice" :read "/api/data"]]
+                                          :checks   '[{:id    :not-expired
+                                                       :query [[:time ?t]]
+                                                       :when  [(< ?t 2000)]}]
+                                          :policies '[{:kind  :allow
+                                                       :query [[:request ?u ?a ?r]
+                                                               [:can ?u ?a ?r]]}]})
+        graph  (sut/graph (:explain result))]
+    (t/is (true? (:valid? result)))
+    (t/is (= [:allow :policy] ((juxt :result :reason) (:explain result))))
+    (t/is (= {:decision 1 :check 2 :policy 1 :fact 4 :derivation 1}
+             (frequencies (map :kind (vals (:nodes graph))))))))

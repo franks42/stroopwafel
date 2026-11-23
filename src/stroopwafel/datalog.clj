@@ -535,6 +535,36 @@
                  (assoc table fact entry))))
       table)))
 
+(defn- query-matches
+  "Lazy seq of matches of `query` (with `:when` `guards`) over the facts
+   visible in `scope`."
+  [query guards fact-store scope]
+  (let [{:keys [origin-facts]} (scope-visible-facts fact-store scope)]
+    (cond->> (eval-body query origin-facts)
+      guards (filter (fn [{:keys [env]}] (eval-when guards env))))))
+
+(defn- match-evidence
+  "Adds the evidence for a match to an explain map: `:because` (the facts
+   of the first match, or of every match in `:all` mode), `:matches` (every
+   match, when realized), and — given an explain context — `:facts`, the
+   fact table for `:because`."
+  [explain first-match all-matches fact-store ctx]
+  (let [because (if (= :all (:mode ctx))
+                  (into [] (comp (mapcat #(map :fact (:proof %))) (distinct))
+                        all-matches)
+                  (mapv :fact (:proof first-match)))]
+    (cond-> (assoc explain :because because)
+      all-matches
+      (assoc :matches (mapv (fn [{:keys [env origin proof]}]
+                              {:env env :origin origin
+                               :facts (mapv :fact proof)})
+                            all-matches))
+      ctx
+      (assoc :facts (explain-facts because fact-store
+                                   (:derivations ctx) (:stated ctx)))
+      (:truncated? ctx)
+      (assoc :truncated? true))))
+
 (defn eval-check
   "Evaluates a single authorization check against a fact store.
 
@@ -563,32 +593,14 @@
   ([check fact-store scope explain?]
    (eval-check check fact-store scope explain? nil))
   ([{:keys [id query kind] guards :when} fact-store scope explain? ctx]
-   (let [{:keys [origin-facts]} (scope-visible-facts fact-store scope)
-         ;; Lazy seq — only realize what we need
-         matches (cond->> (eval-body query origin-facts)
-                   guards (filter (fn [{:keys [env]}] (eval-when guards env))))
+   (let [;; Lazy seq — only realize what we need
+         matches (query-matches query guards fact-store scope)
          ;; In explain mode, realize all matches for audit visibility
          ;; Otherwise, early termination via first
          all-matches (when explain? (doall matches))
          first-match (if explain? (first all-matches) (first matches))
          reject? (= kind :reject)
-         evidence
-         (fn [explain]
-           (let [because (if (= :all (:mode ctx))
-                           (into [] (comp (mapcat #(map :fact (:proof %))) (distinct))
-                                 all-matches)
-                           (mapv :fact (:proof first-match)))]
-             (cond-> (assoc explain :because because)
-               all-matches
-               (assoc :matches (mapv (fn [{:keys [env origin proof]}]
-                                       {:env env :origin origin
-                                        :facts (mapv :fact proof)})
-                                     all-matches))
-               ctx
-               (assoc :facts (explain-facts because fact-store
-                                            (:derivations ctx) (:stated ctx)))
-               (:truncated? ctx)
-               (assoc :truncated? true))))]
+         evidence #(match-evidence % first-match all-matches fact-store ctx)]
      (cond
        ;; reject-if: match means FAIL
        (and reject? first-match)
@@ -627,19 +639,60 @@
    A policy has:
      - `:kind` — `:allow` or `:deny`
      - `:query` — fact patterns to match
+     - `:when` — optional guards
+     - `:id` — optional, reported in explain
 
-   Returns:
-     - `{:matched? true :kind :allow/:deny}` if the query matches
-     - `{:matched? false}` if the query does not match
+   Returns `{:matched? bool :kind kind :explain entry}`, where `entry` is
+   `{:id :kind :query :result :matched|:no-match}`; with `explain?`, a
+   matched entry also carries the evidence (see `eval-check`).
 
-   Uses early termination — stops at first match."
-  [{:keys [kind query] guards :when} fact-store scope]
-  (let [{:keys [origin-facts]} (scope-visible-facts fact-store scope)
-        matches (cond->> (eval-body query origin-facts)
-                  guards (filter (fn [{:keys [env]}] (eval-when guards env))))]
-    (if (first matches)
-      {:matched? true :kind kind}
-      {:matched? false})))
+   Without `explain?`, stops at the first match."
+  ([policy fact-store scope]
+   (eval-policy policy fact-store scope false nil))
+  ([{:keys [id kind query] guards :when} fact-store scope explain? ctx]
+   (let [matches     (query-matches query guards fact-store scope)
+         all-matches (when explain? (doall matches))
+         first-match (first (or all-matches matches))
+         entry       (cond-> {:kind kind :query query}
+                       id (assoc :id id))]
+     (if first-match
+       {:matched? true
+        :kind     kind
+        :explain  (cond-> (assoc entry :result :matched)
+                    explain? (match-evidence first-match all-matches fact-store ctx))}
+       {:matched? false
+        :kind     kind
+        :explain  (assoc entry :result :no-match)}))))
+
+(defn- run-policies
+  "Evaluates policies in order up to and including the first match.
+   Returns the evaluated entries, each with its `:index`."
+  [policies fact-store scope explain? ctx]
+  (loop [i 0, ps (seq policies), acc []]
+    (if-let [p (first ps)]
+      (let [r   (eval-policy p fact-store scope explain? ctx)
+            acc (conj acc (assoc (:explain r) :index i))]
+        (if (:matched? r)
+          acc
+          (recur (inc i) (next ps) acc)))
+      acc)))
+
+(defn- decide
+  "The authorization decision from check results and evaluated policy
+   entries: `{:result :allow|:deny :reason … :decider entry}`.
+
+   Reasons: `:check-failed`, `:no-policies` (allow: checks alone decide),
+   `:policy` (the first matching policy's kind), `:no-matching-policy`
+   (deny: closed world)."
+  [check-results policies evaluated]
+  (let [decider (some #(when (= :matched (:result %)) %) evaluated)]
+    (cond
+      (some #(= :fail (:result %)) check-results) {:result :deny :reason :check-failed}
+      (empty? policies)                           {:result :allow :reason :no-policies}
+      decider                                     {:result  (:kind decider)
+                                                   :reason  :policy
+                                                   :decider decider}
+      :else                                       {:result :deny :reason :no-matching-policy})))
 
 (defn eval-policies
   "Evaluates authorizer policies in order. First matching policy wins.
@@ -647,18 +700,12 @@
    - `:allow` match → `{:result :allow}`
    - `:deny` match → `{:result :deny}`
    - No match → `{:result :deny}` (closed-world default)
+   - No policies → `{:result :allow}`
 
    Policies are only evaluated after all block checks pass."
   [policies fact-store scope]
-  (if (empty? policies)
-    {:result :allow}
-    (let [first-match (some (fn [policy]
-                              (let [r (eval-policy policy fact-store scope)]
-                                (when (:matched? r) r)))
-                            policies)]
-      (if first-match
-        {:result (:kind first-match)}
-        {:result :deny}))))
+  {:result (:result (decide [] policies
+                            (run-policies policies fact-store scope false nil)))})
 
 (defn eval-checks
   "Evaluates all checks on the fact store with optional scope filtering.
@@ -703,7 +750,14 @@
    |||
    |:-|:-|
    | `:valid?`  | boolean authorization decision
-   | `:explain` | optional explain map when :explain? is enabled
+   | `:explain` | with :explain?, the decision map (below)
+
+   The decision map is `{:type :decision :result :allow|:deny :reason …
+   :checks [...] :policies [...] :facts {...}}`: every check with its
+   `:block`, every evaluated policy (up to the deciding one) with its
+   `:index`, and one fact table for all of them. `:reason` is
+   `:check-failed`, `:no-policies`, `:policy`, `:no-matching-policy`
+   or `:limit-exceeded` (then with `:error` instead of checks).
    | `:error`   | when a limit was reached: `{:type :limit-exceeded :limit :max :facts :iterations}`"
   [{:keys [blocks] :as _token}
    & {:keys [explain? authorizer trusted-block-indices limits]}]
@@ -750,7 +804,10 @@
                 (throw e)))))]
     (if error
       (cond-> {:valid? false :error error}
-        explain? (assoc :explain error))
+        explain? (assoc :explain {:type   :decision
+                                  :result :deny
+                                  :reason :limit-exceeded
+                                  :error  error}))
       (let [;; Explain context for checks: what the fixpoint recorded
             ctx (when explain?
                   {:mode        (if (= :all explain?) :all :first)
@@ -758,13 +815,18 @@
                    :stated      stated
                    :truncated?  truncated?})
 
+            tag-block (fn [results block]
+                        (cond->> results
+                          explain? (map #(assoc-in % [:explain :block] block))))
+
             ;; 5. Evaluate checks per block with scoped visibility
             block-results
             (mapcat
              (fn [idx]
                (let [block (nth blocks idx)
                      scope (trusted-origins idx)]
-                 (eval-checks (:checks block) store scope explain? ctx)))
+                 (tag-block (eval-checks (:checks block) store scope explain? ctx)
+                            idx)))
              (range (count blocks)))
 
             ;; 6. Evaluate authorizer checks (with extended scope if trusted blocks)
@@ -772,27 +834,30 @@
 
             authorizer-results
             (when (:checks authorizer)
-              (eval-checks (:checks authorizer) store auth-scope explain? ctx))
+              (tag-block (eval-checks (:checks authorizer) store auth-scope explain? ctx)
+                         :authorizer))
 
-            all-results (concat block-results authorizer-results)
-            failed (first (filter #(= :fail (:result %)) all-results))
+            all-results (cond-> (concat block-results authorizer-results)
+                          explain? vec)
+            failed? (some #(= :fail (:result %)) all-results)
 
             ;; 7. Evaluate authorizer policies (after all checks pass)
-            policy-result
-            (when (and (nil? failed) (:policies authorizer))
-              (eval-policies (:policies authorizer) store auth-scope))]
-        (cond
-          failed
-          (if explain?
-            {:valid? false :explain (:explain failed)}
-            {:valid? false})
-
-          (and policy-result (= :deny (:result policy-result)))
-          (if explain?
-            {:valid? false :explain {:type :policy :result :deny}}
-            {:valid? false})
-
-          :else
-          (if explain?
-            {:valid? true :explain (:explain (last all-results))}
-            {:valid? true}))))))
+            policies  (:policies authorizer)
+            evaluated (when-not failed?
+                        (run-policies policies store auth-scope explain? ctx))
+            {:keys [result reason decider]}
+            (decide (when failed? [{:result :fail}]) policies evaluated)]
+        (cond-> {:valid? (= :allow result)}
+          explain?
+          (assoc :explain
+                 (let [checks   (mapv #(dissoc (:explain %) :facts :truncated?) all-results)
+                       policies (mapv #(dissoc % :facts :truncated?) evaluated)
+                       roots    (concat (mapcat :because checks) (:because decider))]
+                   (cond-> {:type     :decision
+                            :result   result
+                            :reason   reason
+                            :checks   checks
+                            :policies policies
+                            :facts    (explain-facts roots store
+                                                     (:derivations ctx) (:stated ctx))}
+                     truncated? (assoc :truncated? true)))))))))

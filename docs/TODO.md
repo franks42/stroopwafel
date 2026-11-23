@@ -8,9 +8,9 @@ From `docs/review-swival-inkling-2-mini.md` (revised 2026-11-23), in priority or
 - [x] Arity regression tests — check, rule body, allow policy (the three reproduced cases), plus a reject check
 - [x] Drop `:env` from `eval-expr` ex-data (datalog.clj:266) — finding 4; audit other `ex-info` sites for the same leak (graph.clj "Unknown explain node shape" also fixed; limit errors carry only config/counts)
 - [x] ~~Map-shaped `:because` in `eval-check` — always `{:origin … :fact …}` (datalog.clj:498); finding 2~~ superseded by rule proofs below; finding 2 fixed there
-- [ ] `graph` handles the limit-exceeded explain — error node or a clear error, not "Unknown explain node shape"; finding 3
-- [ ] End-to-end `evaluate` → `graph` tests — README example, limit-exceeded, reject-pass check, token with no checks (derived-fact, join, shared-fact, reject-pass and reject-fail cases done; limit-exceeded and no-checks wait on findings 3 and 5)
-- [ ] Explain shows the full decision — every check result, the deciding policy (id, kind, bindings), non-nil when there are no checks (datalog.clj:660–676); finding 5
+- [x] `graph` handles the limit-exceeded explain — error node or a clear error, not "Unknown explain node shape"; finding 3 (explain is now a decision with `:reason :limit-exceeded`; graph renders a single decision node)
+- [x] End-to-end `evaluate` → `graph` tests — README example, limit-exceeded, reject-pass check, token with no checks (all done, plus derived-fact, join, shared-fact, reject-fail, cycles, policies)
+- [x] Explain shows the full decision — every check result, the deciding policy (id, kind, bindings), non-nil when there are no checks (datalog.clj:660–676); finding 5
 - [x] Rule proofs in explain — thread `:proof` through, or remove the unreachable derived-fact branch in `graph.clj`; decided: option A, see review Decisions
 - [x] All-reasons explain (`:explain? :all`) — every derivation per fact, flat table, derivation cap; decided: show circular reasons, one flat shape for both modes
 - [ ] Semi-naive fixpoint — rules re-fire over every fact each round; a 400-step chain takes ~9 s (JVM) with or without explain, ~40 s on bb

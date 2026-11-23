@@ -1,15 +1,20 @@
 (ns stroopwafel.graph
-  "Turns a check's explain map (see `stroopwafel.datalog/eval-check`) into
-   nodes and edges. Pure data transformation — no authorization logic.
+  "Turns an explain map — the decision from `evaluate`, or a single check's
+   from `stroopwafel.datalog/eval-check` — into nodes and edges. Pure data
+   transformation — no authorization logic.
 
    Nodes:
-     - `:check`        — the check, with its result
+     - `:decision`     — the result and its reason (the root of a decision)
+     - `:check`        — a check, with its block and result
+     - `:policy`       — an evaluated policy: index, id, effect, result
      - `:fact`         — a fact, with its origin and whether a block stated it
      - `:derivation`   — one rule application: rule, block and bindings
      - `:missing-fact` — the query of a check that found no match
 
    Edges:
+     - decision `:check` → check, decision `:policy` → policy
      - check `:because` / `:rejected-by` / `:missing` → fact
+     - matched policy `:because` → fact
      - fact `:derived-by` → derivation
      - derivation `:uses` → fact (the facts the rule body matched)
 
@@ -59,6 +64,25 @@
     :else
     [[:missing [:missing (:missing explain)]]]))
 
+(defn- check-node [explain]
+  (cond-> {:kind     :check
+           :check-id (:check-id explain)
+           :result   (:result explain)}
+    (contains? explain :block) (assoc :block (:block explain))))
+
+(defn- policy-node [entry]
+  (cond-> {:kind   :policy
+           :index  (:index entry)
+           :effect (:kind entry)
+           :result (:result entry)}
+    (:id entry) (assoc :policy-id (:id entry))))
+
+(defn- push-children
+  "Pushes `[label item]` pairs below node `id`, in reverse so they are
+   visited in order."
+  [stack id children]
+  (into stack (map (fn [[label item]] [id label item])) (reverse children)))
+
 (defn- walk
   "Depth-first over the fact table, iteratively (proof chains can be long).
    Each stack entry is `[from label [kind payload]]`; children are pushed
@@ -67,6 +91,17 @@
   (if-let [[from label [kind payload]] (peek stack)]
     (let [stack (pop stack)]
       (case kind
+        :check
+        (let [[id state] (new-node state from label (check-node payload))]
+          (recur state facts (push-children stack id (check-children payload))))
+
+        :policy
+        (let [[id state] (new-node state from label (policy-node payload))]
+          (recur state facts
+                 (push-children stack id
+                                (map (fn [f] [:because [:fact f]])
+                                     (:because payload)))))
+
         :fact
         (if-let [id (get-in state [:seen payload])]
           (recur (update state :edges conj {:from from :to id :label label})
@@ -100,7 +135,7 @@
     state))
 
 (defn explain->graph
-  "Converts a check's explain map into a graph structure.
+  "Converts an explain map — a decision or a single check — into a graph.
 
    The resulting graph contains:
    |||
@@ -109,17 +144,25 @@
    |`:nodes` | map of node-id -> node
    |`:edges` | list of directed edges with semantic labels."
   [explain]
-  (when-not (and (map? explain) (= :check (:type explain)))
-    (throw (unknown-explain explain)))
-  (let [[root state] (new-node {:counter 1 :nodes {} :edges [] :seen {}}
-                               nil nil
-                               {:kind     :check
-                                :check-id (:check-id explain)
-                                :result   (:result explain)})
-        stack        (into []
-                           (map (fn [[label item]] [root label item]))
-                           (reverse (check-children explain)))
-        state        (walk state (:facts explain) stack)]
-    {:root  root
+  (let [etype (when (map? explain) (:type explain))
+        state {:counter 1 :nodes {} :edges [] :seen {}}
+        state (case etype
+                :decision
+                (let [[root state] (new-node state nil nil
+                                             {:kind   :decision
+                                              :result (:result explain)
+                                              :reason (:reason explain)})]
+                  (walk state (:facts explain)
+                        (push-children []
+                                       root
+                                       (concat
+                                        (map (fn [c] [:check [:check c]]) (:checks explain))
+                                        (map (fn [p] [:policy [:policy p]]) (:policies explain))))))
+
+                :check
+                (walk state (:facts explain) [[nil nil [:check explain]]])
+
+                (throw (unknown-explain explain)))]
+    {:root  :n1
      :nodes (:nodes state)
      :edges (:edges state)}))

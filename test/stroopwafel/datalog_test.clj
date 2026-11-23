@@ -106,7 +106,8 @@
                            :query [[:can "alice" :read "file-1"]]}]}]}
         result (sut/eval-token token :explain? true)]
     (t/is (false? (:valid? result)))
-    (t/is (= :fail (get-in result [:explain :result])))))
+    (t/is (= [:deny :check-failed] ((juxt :result :reason) (:explain result))))
+    (t/is (= :fail (get-in result [:explain :checks 0 :result])))))
 
 ;;; ---- Scoping tests (ported from Biscuit model) ----
 

@@ -71,16 +71,19 @@ Like a stroopwafel: two layers with something sealed between them.
 - **Expressions** in `:when` and `:let` are Clojure forms over a whitelist
   of about 35 functions: comparison, arithmetic, `str/…`, collections,
   type predicates, regex. There is no `eval` and no namespace lookup.
-- **Explain.** `:explain? true` shows why a check passed or failed:
-  `:because` lists the facts it matched, and `:facts` says for each fact
-  which block stated it and which rules derived it (rule, block,
-  bindings, and the facts the rule used), down to stated facts.
-  `:explain? true` keeps the first derivation of each fact;
-  `:explain? :all` keeps every derivation, circular ones included, up to
-  `:max-derivations` (default 10 000; past it the explain is flagged
-  `:truncated?`, the decision is unchanged). `sw/graph` turns it into
-  check, fact and derivation nodes; a fact reached along several paths,
-  or in a loop, is one node.
+- **Explain.** `:explain? true` returns the whole decision: its
+  `:result` and `:reason` (`:policy`, `:check-failed`, `:no-policies`,
+  `:no-matching-policy`, `:limit-exceeded`), every check with its block
+  and result, every policy evaluated up to the deciding one, and one
+  `:facts` table. A check's or policy's `:because` lists the facts it
+  matched; `:facts` says for each fact which block stated it and which
+  rules derived it (rule, block, bindings, and the facts the rule used),
+  down to stated facts. `:explain? true` keeps the first derivation of
+  each fact; `:explain? :all` keeps every derivation, circular ones
+  included, up to `:max-derivations` (default 10 000; past it the
+  explain is flagged `:truncated?`, the decision is unchanged).
+  `sw/graph` turns it into decision, check, policy, fact and derivation
+  nodes; a fact reached along several paths, or in a loop, is one node.
 
 ## Limits fail closed
 
