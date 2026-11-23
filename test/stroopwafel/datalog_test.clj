@@ -636,3 +636,55 @@
                                  {:policies [{:kind :allow
                                               :query [[:reachable 1 10]]}]})]
       (t/is (:valid? result)))))
+
+;; ---------------------------------------------------------------------------
+;; Arity: a pattern matches a fact only when both have the same length.
+;; Before 0.13.0, unify* zipped pattern and fact with (map vector …), which
+;; truncates to the shorter one, so mismatched arities matched and failed open.
+;; ---------------------------------------------------------------------------
+
+(t/deftest unify-requires-equal-arity
+  (t/testing "pattern longer than fact does not unify"
+    (t/is (nil? (sut/unify '[:user ?u ?role] [:user "alice"]))))
+  (t/testing "pattern shorter than fact does not unify"
+    (t/is (nil? (sut/unify '[:right ?u] [:right "alice" :read]))))
+  (t/testing "equal arity still unifies"
+    (t/is (= '{?u "alice"} (:env (sut/unify '[:user ?u] [:user "alice"]))))))
+
+(t/deftest check-arity-mismatch-fails
+  (let [store {[:user "alice"] #{0}}]
+    (t/testing "check pattern longer than the fact does not pass"
+      (t/is (= :fail (:result (sut/eval-check {:id :c :query '[[:user ?u ?role]]}
+                                              store)))))
+    (t/testing "check pattern shorter than the fact does not pass"
+      (t/is (= :fail (:result (sut/eval-check {:id :c :query '[[:user]]}
+                                              store)))))))
+
+(t/deftest reject-check-arity-mismatch-does-not-match
+  (t/testing "a reject pattern of another arity does not match the fact"
+    (let [store {[:admin "mallory"] #{0}}]
+      (t/is (= :pass (:result (sut/eval-check {:id :r :kind :reject
+                                               :query '[[:admin ?u ?x]]}
+                                              store)))))))
+
+(t/deftest allow-policy-arity-mismatch-denies
+  (t/testing "a shorter allow-policy pattern does not match a longer fact"
+    (let [token  {:blocks [{:facts [[:right "alice" :read]] :rules [] :checks []}]}
+          result (sut/eval-token token
+                                 :authorizer
+                                 {:policies [{:kind  :allow
+                                              :query '[[:right ?u]]}]})]
+      (t/is (false? (:valid? result))))))
+
+(t/deftest rule-body-arity-mismatch-derives-nothing
+  (t/testing "a longer rule-body pattern does not derive from a shorter fact"
+    (let [token  {:blocks [{:facts  [[:user "alice"]]
+                            :rules  [{:id   :r
+                                      :head '[:admin ?u]
+                                      :body '[[:user ?u ?x]]}]
+                            :checks []}]}
+          result (sut/eval-token token
+                                 :authorizer
+                                 {:policies [{:kind  :allow
+                                              :query '[[:admin ?u]]}]})]
+      (t/is (false? (:valid? result))))))

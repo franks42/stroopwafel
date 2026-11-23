@@ -111,23 +111,28 @@
    Attempts to unify a pattern with a concrete fact given an
    accumulator state `{:env ... :proof ...}`.
 
+   Pattern and fact must have the same arity; a mismatch never unifies.
+   (Zipping alone would truncate to the shorter one and fail open.)
+
    Returns updated state on success, nil on failure."
   [state pattern fact]
-  (reduce (fn [state [pt ft]]
-            (when state
-              (let [{:keys [env proof]} state]
-                (cond
-                  (variable? pt)
-                  (when-let [new-env (bind env pt ft)]
-                    {:env   new-env
-                     :proof proof})
+  (when (= (count pattern) (count fact))
+    (reduce (fn [state [pt ft]]
+              (if-not state
+                (reduced nil)
+                (let [{:keys [env proof]} state]
+                  (cond
+                    (variable? pt)
+                    (when-let [new-env (bind env pt ft)]
+                      {:env   new-env
+                       :proof proof})
 
-                  (value= pt ft)
-                  state
+                    (value= pt ft)
+                    state
 
-                  :else nil))))
-          state
-          (map vector pattern fact)))
+                    :else nil))))
+            state
+            (map vector pattern fact))))
 
 (defn unify
   "Attempts to unify a pattern with a concrete fact, producing
