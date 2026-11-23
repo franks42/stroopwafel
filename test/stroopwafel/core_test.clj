@@ -668,3 +668,32 @@
     (t/is (= [:allow :policy] ((juxt :result :reason) (:explain result))))
     (t/is (= {:decision 1 :check 2 :policy 1 :fact 4 :derivation 1}
              (frequencies (map :kind (vals (:nodes graph))))))))
+
+(t/deftest signer-facts-without-authorizer-facts
+  (t/testing "a trusted block's signer fact is added when the authorizer has no :facts"
+    (let [idp-key (byte-array [1 2 3 4 5])
+          token   {:blocks [{:facts [[:user "alice"]]}
+                            {:facts [[:email "alice" "alice@idp.com"]]
+                             :external-key idp-key}]}
+          result  (sut/evaluate token :explain? true
+                                :authorizer
+                                {:trusted-external-keys [idp-key]
+                                 :policies [{:kind  :allow
+                                             :query '[[:block-signed-by 1 ?k]]}]})
+          signer  (first (get-in result [:explain :policies 0 :because]))]
+      (t/is (true? (:valid? result)))
+      (t/is (= :block-signed-by (first signer)))
+      (t/is (= 1 (second signer)))
+      (t/is (= {:origin #{:authorizer} :stated? true}
+               (get-in result [:explain :facts signer])))))
+  (t/testing "with authorizer :facts, both they and the signer fact are present"
+    (let [idp-key (byte-array [1 2 3 4 5])
+          token   {:blocks [{:facts [[:user "alice"]]}
+                            {:facts [] :external-key idp-key}]}
+          result  (sut/evaluate token
+                                :authorizer
+                                {:trusted-external-keys [idp-key]
+                                 :facts    [[:time 1000]]
+                                 :policies [{:kind  :allow
+                                             :query '[[:time ?t] [:block-signed-by 1 ?k]]}]})]
+      (t/is (true? (:valid? result))))))

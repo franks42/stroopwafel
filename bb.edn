@@ -1,0 +1,16 @@
+{:paths ["src" "test"]
+ :tasks
+ {test:bb {:doc      "Run the test suite under babashka (every test/**/*_test.clj)"
+           :requires ([babashka.fs :as fs]
+                      [clojure.string :as str]
+                      [clojure.test :as t])
+           :task     (let [ns-of (fn [path]
+                                   (let [rel (str (fs/relativize "test" path))]
+                                     (-> (subs rel 0 (- (count rel) (count ".clj")))
+                                         (str/replace "/" ".")
+                                         (str/replace "_" "-")
+                                         symbol)))
+                           nss   (sort (map ns-of (fs/glob "test" "**_test.clj")))]
+                       (apply require nss)
+                       (let [{:keys [fail error]} (apply t/run-tests nss)]
+                         (System/exit (if (zero? (+ fail error)) 0 1))))}}}

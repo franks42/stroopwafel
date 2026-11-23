@@ -52,6 +52,11 @@ Like a stroopwafel: two layers with something sealed between them.
 - **Rules** derive facts: `{:id :head [...] :body [[...] ...]}`, with
   optional `:when` guards and `:let` bindings. Rules run to a fixpoint,
   so recursive rules (transitive closure) work, within limits (below).
+  Each round runs the blocks in order (0, 1, …, then the authorizer), and
+  a block sees facts that earlier blocks derived in the same round. Since
+  rule bodies have no negation, this order never changes which facts are
+  derived; it only affects how many rounds it takes, and which derivation
+  `:explain? true` reports first.
 - **Checks** must all pass. `{:id :query [...]}` passes if the query
   matches (check-if). `{:kind :reject ...}` passes if the query does _not_
   match (reject-if).

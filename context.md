@@ -42,10 +42,15 @@ input.
    authority but never expand it.
 2. **Rules** run to a fixpoint, so recursion and transitive closure work.
    `:limits` (default `{:max-iterations 100 :max-facts 1000}`) bound it.
-   Reaching a limit first throws inside `apply-rules-scoped`, and
+   Reaching a limit first throws inside `fixpoint`, and
    `eval-token` turns that into `{:valid? false :error {:type
    :limit-exceeded …}}`: a partial store is never evaluated, because a
    reject check or deny policy over a missing derived fact would pass.
+   (`:max-derivations`, default 10 000, only caps explain data and never
+   denies.) Each round runs the blocks in order, then the authorizer, and
+   a block sees facts derived earlier in the same round. With no negation
+   in rule bodies, the order cannot change the fixpoint, only the round
+   count and which derivation `:explain? true` keeps.
 3. **Checks.** `:one` (the default, check-if) passes on a match. `:reject`
    (reject-if) passes when there is no match. Rule bodies have no
    negation; negative constraints are expressed as reject checks and deny
