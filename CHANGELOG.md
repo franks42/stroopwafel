@@ -3,7 +3,7 @@
 All notable changes to stroopwafel. Each entry reflects committed work.
 History before 0.13.0 is in `context.md` (## History).
 
-## Unreleased (0.14.0)
+## 0.14.0 — 2026-11-23
 
 ### Security
 
@@ -17,6 +17,8 @@ History before 0.13.0 is in `context.md` (## History).
   `[:revocation-entry …]`. The store now keeps every minimal origin set
   per fact, and a scope sees a fact through any of them. Details,
   exploits and workarounds: `docs/security-advisory-2026-11-23-origin-hiding.md`.
+  There are no known users of the affected releases, so this changelog
+  entry and the advisory are the only disclosure.
 
 ### Breaking
 

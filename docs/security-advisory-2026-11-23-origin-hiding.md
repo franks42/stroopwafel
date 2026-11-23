@@ -3,7 +3,7 @@
 - **Date:** 2026-11-23
 - **Severity:** critical — a revoked or otherwise denied token can be made valid
 - **Affected:** every release with origin tracking, 0.2.0 through 0.13.0. Confirmed by test on 0.9.0, 0.11.0, 0.12.0 and 0.13.0; earlier releases use a different token API but the same fact store.
-- **Fixed in:** the next release after 0.13.0 (see `CHANGELOG.md`)
+- **Fixed in:** 0.14.0 (see `CHANGELOG.md`)
 - **Found by:** follow-up to the 0.12.0 review (`docs/review-swival-inkling-2-mini.md`, finding 6)
 
 ## Summary
