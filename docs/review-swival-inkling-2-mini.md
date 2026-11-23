@@ -11,7 +11,9 @@
 
 This is a disciplined, well-documented library. The 0.11.0 split into four layers (engine / signet / stroopwafel-pdp / PEP) is the right call: the engine is pure, zero-dependency and trusts its input, with all crypto and trust decisions pushed to the PDP. The fail-closed fixpoint limits in 0.12.0 fix a real, reproduced fail-open bug. Scope isolation via origin sets, the closed expression whitelist, the `:when`/`:let` guard design, and the explain tooling are all thoughtful.
 
-This pass found **one high-severity gap that is not covered by any test** — the graph renderer cannot render the explain tree produced by `evaluate` on the happy path — plus a few smaller items worth acting on. The prior review (Nov 21) flagged an arity-mismatch in unification and a graph crash on limit-exceeded trees; both are confirmed, and this pass adds the happy-path graph failure as the most important finding.
+This pass found **one authorization bypass**: `unify*` ignores arity, so patterns and facts of different lengths still match — and this lets through checks, rules _and_ allow policies (finding 1). It also found that the graph renderer cannot render the explain tree produced by `evaluate` on the happy path (finding 2), plus a few smaller items worth acting on. The prior review (Nov 21) flagged the arity mismatch (as checks-only) and a graph crash on limit-exceeded trees; both are confirmed, and this pass shows the arity issue is broader than reported.
+
+_Revised 2026-11-23 after a second-opinion check: findings re-ranked (arity is now #1), the arity finding corrected (it fails open for rules and policies, not only checks), explain-output gaps added as finding 5, duplicate suggestions merged, and open question 1 moved to Decisions._
 
 ## What the project does
 
@@ -117,7 +119,24 @@ The checks happen in this order, so a fixpoint reached exactly at the limit is n
 
 ### Real
 
-1. **The graph renderer cannot render the explain tree produced by `evaluate` on the happy path** — *high severity, untested*. In `eval-check` (datalog.clj:497–504), when a check passes and the matched fact is found in the store lookup, `:because` is set to `(get fact-lookup fact)` — an **origin set** like `#{0}` or `#{:authorizer}`, not a map. The graph's `build-graph` then recurses into that set as if it were an explain node; every branch in `explain-node->graph-node` fails (a set is not a map) and the function throws "Unknown explain node shape". Reproduced with the README's own example:
+1. **Arity mismatch is silently accepted in `unify*` — authorization bypass** — _critical; confirmed from prior review, scope corrected_. `(map vector pattern fact)` (datalog.clj:130) truncates to the shorter of the two, so a pattern with more elements than the fact unifies with the missing variables unbound, and a pattern with fewer elements than the fact unifies with the extra elements ignored. This fails open everywhere patterns are matched — checks, rule bodies and authorizer policies. Reproduced via `sw/evaluate`:
+   ```clojure
+   ;; shorter allow-policy pattern matches a longer fact
+   ;; fact [:right "alice" :read], policy {:kind :allow :query [[:right ?u]]}
+   ;; => {:valid? true}
+
+   ;; longer rule-body pattern still derives when the head doesn't use the missing var
+   ;; fact [:user "alice"], rule {:head [:admin ?u] :body [[:user ?u ?x]]},
+   ;; policy {:kind :allow :query [[:admin ?u]]}
+   ;; => {:valid? true}
+
+   ;; check with longer pattern passes, explain carries a nil fact
+   ;; eval-check {:id :c1 :query '[[:user ?u ?role]]} {[:user "alice"] #{0}}
+   ;; => {:result :pass, :explain {... :because {:origin #{0} :fact nil}}}
+   ```
+   The earlier claim that rules "fail closed" holds only when the head references a missing variable. Fix: require `(= (count pattern) (count fact))` before unifying. There is no safe lenient variant — "ignore extra fact elements" is exactly the bypass above.
+
+2. **The graph renderer cannot render the explain tree produced by `evaluate` on the happy path** — _high severity, untested_. In `eval-check` (datalog.clj:497–504), when a check passes and the matched fact is found in the store lookup, `:because` is set to `(get fact-lookup fact)` — an **origin set** like `#{0}` or `#{:authorizer}`, not a map. The graph's `build-graph` then recurses into that set as if it were an explain node; every branch in `explain-node->graph-node` fails (a set is not a map) and the function throws "Unknown explain node shape". Reproduced with the README's own example:
    ```clojure
    ;; valid? => true, but graph throws
    (sw/evaluate token :explain? true :authorizer {...})
@@ -127,21 +146,22 @@ The checks happen in this order, so a fixpoint reached exactly at the limit is n
    ```
    The graph tests pass only because they hand-craft map-shaped `:because` nodes (with a `:rule` key or an explicit `{:origin ... :fact ...}` fallback) that never occur in real output. No test pipes `evaluate` → `graph` together, which is why this gap survived. Fix: either make `eval-check` always emit a map-shaped `:because` (e.g. `{:origin <set> :fact <fact>}`), or teach `explain-node->graph-node` to handle bare origin sets as authority-fact nodes. The first is cleaner and matches the existing fallback shape.
 
-2. **Arity mismatch is silently accepted in `unify*`** — *confirmed from prior review*. `(map vector pattern fact)` truncates to the shorter of the two, so a pattern with more elements than the fact unifies with the missing variables unbound, and a pattern with fewer elements than the fact unifies with the extra elements ignored. For rules this fails closed (unbound head vars → `nil` → no derivation). For **checks** it fails open: a check whose pattern has more arity than the fact matches and passes, with `:explain` carrying a `nil` fact. Concretely:
-   ```clojure
-   ;; unify '[:user ?u ?role] [:user "alice"] => {:env {?u "alice"} ...}  (no error)
-   ;; eval-check {:id :c1 :query '[[:user ?u ?role]]} {[:user "alice"] #{0}}
-   ;; => {:result :pass, :explain {... :because {:origin #{0} :fact nil}}}
-   ```
-   Fix: require `(= (count pattern) (count fact))` before unifying. Strict is the safer default for an authorization engine.
+   **Deeper issue:** either fix stops the crash, but the graph stays flat. `eval-check` never records which rule derived a fact — `:because` is only ever an origin set or `{:origin … :fact …}` — so the graph's derived-fact branch (`derived-node?`, keyed on `:rule`) is reached only by the hand-crafted test data. The explain producer and the graph consumer disagree on the tree's shape; the real fix is to decide whether explain carries rule proofs (the `:proof` that `unify`/`eval-body` already accumulate) and align one side to the other.
 
 3. **The graph throws on the limit-exceeded explain tree** — *confirmed from prior review*. When a limit is reached, `:explain` is the error map (`{:type :limit-exceeded :limit … :facts … :iterations …}`). `build-graph` on that node falls through to `:else` and throws "Unknown explain node shape". So `(sw/graph (:explain result))` on a fail-closed result crashes. Fix: handle the `:limit-exceeded` explain shape in `explain-node->graph-node`, or make `graph` accept the error map explicitly and return a small graph with an error node.
 
-4. **The exception data leaks the full variable environment** — *confirmed from prior review*. `eval-expr` throws `ex-info` with `{:variable form :env env}` — the entire env, including bound values (identifiers, maybe more), in the exception data. Reproduced:
+4. **The exception data leaks the full variable environment** — _new in this pass_ (the Nov 21 review does not mention it). `eval-expr` throws `ex-info` with `{:variable form :env env}` — the entire env, including bound values (identifiers, maybe more), in the exception data. Reproduced:
    ```clojure
    ;; eval-expr '?x {'?t 500} => ex-data {:variable ?x :env {?t 500}}
    ```
    If this propagates to a caller that logs or serializes it, the env values leak. Fix: drop `:env` from the ex-data (or keep only the variable name).
+
+5. **The explain output omits the decision's actual basis** — _medium; audit gap_. In `eval-token` (datalog.clj:660–676):
+   - On success, `:explain` is the _last_ check's explain only; on failure, the _first_ failing check's only.
+   - A token with no checks returns `{:valid? true :explain nil}` (reproduced), so there is nothing to audit or graph.
+   - The policy that decided the outcome is never named: an allow is not recorded at all, and a deny is `{:type :policy :result :deny}` with no policy id or query.
+
+   Fix: return every check result plus the matching policy (id, kind, bindings) in explain mode.
 
 ### Minor / observations
 
@@ -151,36 +171,38 @@ The checks happen in this order, so a fixpoint reached exactly at the limit is n
 - **The graph for reject-pass checks renders `{:origin :reject-pass}` as an authority-fact node with a `nil` fact** — harmless but awkward.
 - **`deps.edn` lists `"resources"` in `:paths` but no `resources/` directory exists.** Harmless; worth cleaning up.
 - **`context.md` is at the repo root rather than in `docs/`** — fine, but it's the kind of file that invites staleness; it's honest about it.
-- **No test pipes `evaluate` → `graph` together.** This is why finding 1 survived. A single end-to-end test (README example → graph) would have caught it.
+- **No test pipes `evaluate` → `graph` together.** This is why finding 2 survived; see suggestion 2.
 
 ## Suggestions for improvement
 
-1. **Fix the happy-path graph crash first** — it's the most user-visible gap and has no test coverage. Either normalize `:because` to a map in `eval-check`, or handle bare origin sets in `explain-node->graph-node`. Add an end-to-end test that runs the README example through `evaluate` → `graph`.
-2. **Add CI** (GitHub Actions) running `clojure -X:test` on push/PR. For a security-adjacent library, this is cheap and high-value.
-3. **Require equal arity in `unify*`** — strict is the safer default for an authorization engine; it also makes finding 2's fail-open check path impossible.
+1. **Require equal arity in `unify*` first** — it's an authorization bypass (finding 1). Add regression tests for all three paths: check, rule body, allow policy.
+2. **Fix the happy-path graph crash** (finding 2) — normalize `:because` to a map in `eval-check`, and decide whether explain should carry rule proofs. Add an end-to-end test that pipes `evaluate` → `graph` (README example, plus a limit-exceeded case); this one test would have caught findings 2 and 3.
+3. **Add CI** (GitHub Actions) running `clojure -X:test` on push/PR. For a security-adjacent library, this is cheap and high-value.
 4. **Drop `:env` from exception data** in `eval-expr` (and audit other ex-info sites) so bound values don't leak into logs or serialized errors.
 5. **Handle the limit-exceeded explain shape in `graph`** — either render it as an error node or reject it with a clearer message than "Unknown explain node shape".
 6. **Document within-round block ordering** (later blocks see earlier blocks' derived facts in the same round) in the architecture docs and README.
 7. **Consider whether "no policies → allow" should stay as-is** — it's documented and deliberate, but it is fail-open. An explicit answer in the design docs would help consumers decide.
 8. **Clean up `deps.edn`** (remove the nonexistent `resources/` path) and add a test pinning the `authorizer-with-signers` nil-seed shape.
-9. **Consider returning all check results in explain mode** rather than just the last pass / first failure, so audit trails show every check's outcome.
-10. **Add an end-to-end test that pipes `evaluate` → `graph`** — this is the single highest-leverage test addition; it would have caught finding 1 and finding 3 simultaneously.
+9. **Return all check results and the deciding policy in explain mode** (finding 5), so audit trails show every check's outcome and why the decision was made.
 
 ## Bottom line
 
-The architecture is clean and the fail-closed design is right. The core engine is solid, and the 0.12.0 limits fix was the right call. The actionable items are: the happy-path graph crash (high severity, untested), the arity-mismatch gap in `unify*` (real, fix before 0.13.0), the limit-exceeded graph crash, and the env leak in exception data. Everything else is polish. No coding was done for this review; nothing in the repo was modified except this review file.
+The architecture is clean and the fail-closed design is right. The core engine is solid, and the 0.12.0 limits fix was the right call. The actionable items are: the arity-mismatch bypass in `unify*` (critical — fails open for checks, rules and policies; fix before 0.13.0), the happy-path graph crash (high severity, untested), the limit-exceeded graph crash, the env leak in exception data, and the explain-output gaps. Everything else is polish. No coding was done for this review; nothing in the repo was modified except this review file.
 
 ---
 
 ## Open questions
 
-- Should the arity-mismatch fix be strict (require equal arity) or lenient (allow fewer-element patterns to match, ignoring extra fact elements)? Strict is the safer default for an authorization engine.
+- ~~Should the arity-mismatch fix be strict (require equal arity) or lenient (allow fewer-element patterns to match, ignoring extra fact elements)? Strict is the safer default for an authorization engine.~~ Resolved — see Decisions.
 - Should "no policies → allow" stay as-is, or become deny (fail closed)?
 - Should the limit-exceeded explain tree be handled in `graph`, or should `graph` simply reject it with a clearer error?
 - Should `eval-check` always emit map-shaped `:because` nodes, or should `graph` handle bare origin sets? (Both are valid; the first is cleaner.)
+- Should the explain tree carry rule-derivation proofs (so the graph can show _why_ a derived fact exists), or should the graph's derived-fact branch be removed as unreachable?
+- Should arity be enforced at match time only, or also validated up front (rule/check/policy patterns vs. known predicate arities) so mistakes surface as errors rather than silent non-matches?
 
 ---
 
 ## Decisions
 
-- 2026-11-22 — Read-only review at v0.12.0; no files changed except this review. Tests were run (71 tests / 146 assertions, 0 failures) and every finding was reproduced empirically before being written down.
+- ~~2026-11-22 — Read-only review at v0.12.0; no files changed except this review. Tests were run (71 tests / 146 assertions, 0 failures) and every finding was reproduced empirically before being written down.~~ (Review method, not a decision; already stated in the header's **Method** line.)
+- 2026-11-23 — Arity in `unify*` is strict (equal length required); the lenient variant is the bypass itself.
