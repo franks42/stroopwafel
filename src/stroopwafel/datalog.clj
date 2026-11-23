@@ -261,14 +261,17 @@
    - Variables (`?`-prefixed symbols) are looked up in `env`; throws if unbound.
    - Sequential forms `(f arg1 arg2 ...)` resolve `f` from `built-in-fns`,
      recursively evaluate args, then apply.
-   - All other values (numbers, strings, keywords) are returned as literals."
+   - All other values (numbers, strings, keywords) are returned as literals.
+
+   Error data never includes `env`: bound values may be identifiers or
+   secrets, and ex-data tends to end up in logs."
   [form env]
   (cond
     (variable? form)
     (let [v (get env form ::unbound)]
       (when (= v ::unbound)
         (throw (ex-info (str "Unbound variable in expression: " form)
-                        {:variable form :env env})))
+                        {:variable form})))
       v)
 
     (sequential? form)

@@ -63,8 +63,11 @@
     (:origin explain-node) (authority-fact-node id explain-node)
 
     :else
+    ;; Describe the shape only: the node itself may carry facts and bindings.
     (throw (ex-info "Unknown explain node shape"
-                    {:node explain-node}))))
+                    {:node-keys  (when (map? explain-node)
+                                   (set (keys explain-node)))
+                     :node-class (some-> explain-node class .getName)}))))
 
 (defn build-graph
   "Recursively converts an explain tree into a graph fragment.

@@ -139,3 +139,14 @@
 
     (t/is (= :authority-fact
              (-> graph :nodes :n2 :kind)))))
+
+(t/deftest unknown-node-error-does-not-leak-facts
+  (t/testing "ex-data describes the node's shape, not its facts or bindings"
+    (let [node {:fact        [:user "alice"]
+                :all-matches [{:env '{?u "alice"}}]}
+          data (try (sut/explain-node->graph-node :n1 node)
+                    (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+      (t/is (= {:node-keys #{:fact :all-matches}
+                :node-class "clojure.lang.PersistentArrayMap"}
+               data))
+      (t/is (not (re-find #"alice" (pr-str data)))))))

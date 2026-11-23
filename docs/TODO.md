@@ -6,7 +6,7 @@ From `docs/review-swival-inkling-2-mini.md` (revised 2026-11-23), in priority or
 
 - [x] Strict arity in `unify*` — require `(= (count pattern) (count fact))` (datalog.clj:130); finding 1, authorization bypass
 - [x] Arity regression tests — check, rule body, allow policy (the three reproduced cases), plus a reject check
-- [ ] Drop `:env` from `eval-expr` ex-data (datalog.clj:266) — finding 4; audit other `ex-info` sites for the same leak
+- [x] Drop `:env` from `eval-expr` ex-data (datalog.clj:266) — finding 4; audit other `ex-info` sites for the same leak (graph.clj "Unknown explain node shape" also fixed; limit errors carry only config/counts)
 - [ ] Map-shaped `:because` in `eval-check` — always `{:origin … :fact …}` (datalog.clj:498); finding 2
 - [ ] `graph` handles the limit-exceeded explain — error node or a clear error, not "Unknown explain node shape"; finding 3
 - [ ] End-to-end `evaluate` → `graph` tests — README example, limit-exceeded, reject-pass check, token with no checks

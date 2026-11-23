@@ -688,3 +688,14 @@
                                  {:policies [{:kind  :allow
                                               :query '[[:admin ?u]]}]})]
       (t/is (false? (:valid? result))))))
+
+(t/deftest eval-expr-error-does-not-leak-env
+  (t/testing "ex-data names the unbound variable but carries no bound values"
+    (let [data (try (sut/eval-expr '?x '{?t "secret-token-id"})
+                    (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+      (t/is (= '{:variable ?x} data))))
+  (t/testing "a guard error raised through eval-check carries no bound values"
+    (let [data (try (sut/eval-check {:id :c :query '[[:user ?u]] :when '[(= ?x ?u)]}
+                                    {[:user "alice"] #{0}})
+                    (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+      (t/is (= '{:variable ?x} data)))))
