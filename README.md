@@ -59,9 +59,10 @@ Like a stroopwafel: two layers with something sealed between them.
   so recursive rules (transitive closure) work, within limits (below).
   Each round runs the blocks in order (0, 1, …, then the authorizer), and
   a block sees facts that earlier blocks derived in the same round. Since
-  rule bodies have no negation, this order never changes which facts are
-  derived; it only affects how many rounds it takes, and which derivation
-  `:explain? true` reports first.
+  rule bodies have no negation and a fact keeps every origin set it is
+  found with (see Scopes), this order never changes which facts each
+  scope sees; it only affects how many rounds it takes, and which
+  derivation `:explain? true` reports first.
 - **Checks** must all pass. `{:id :query [...]}` passes if the query
   matches (check-if). `{:kind :reject ...}` passes if the query does _not_
   match (reject-if).
@@ -73,7 +74,11 @@ Like a stroopwafel: two layers with something sealed between them.
   `:authorizer`. Block 0 is the authority. Block N's rules and checks see
   `#{0 N :authorizer}`. The authorizer sees `#{0 :authorizer}`. A later
   block can therefore add checks (restrict) but cannot add facts that the
-  authorizer will see (expand).
+  authorizer will see (expand). A fact stated or derived in several ways
+  keeps each origin set, and a scope sees it through any of them, so a
+  later block cannot hide a fact from the authorizer either (before
+  0.14.0 it could: see
+  `docs/security-advisory-2026-11-23-origin-hiding.md`).
 - **Third-party blocks.** A block carries an `:external-key`. If that key
   is in the authorizer's `:trusted-external-keys`, the block's facts
   become visible to the authorizer, and the engine adds

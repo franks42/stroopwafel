@@ -378,13 +378,14 @@
                                               :facts  [[:can "alice" :read "file-1"]]}]}]
                       :policies []
                       :facts    {[:can "alice" :read "file-1"]
-                                 {:origin      #{0 1}
-                                  :derivations [{:rule  :can-from-right
-                                                 :block 1
-                                                 :env   '{?u "alice" ?a :read ?r "file-1"}
-                                                 :proof [[:right "alice" :read "file-1"]]}]}
+                                 {:origins     #{#{0 1}}
+                                  :derivations [{:rule   :can-from-right
+                                                 :block  1
+                                                 :origin #{0 1}
+                                                 :env    '{?u "alice" ?a :read ?r "file-1"}
+                                                 :proof  [[:right "alice" :read "file-1"]]}]}
                                  [:right "alice" :read "file-1"]
-                                 {:origin #{0} :stated? true}}}}
+                                 {:origins #{#{0}} :stated? true}}}}
            (sut/evaluate delegation-token :explain? true))))
 
 (t/deftest graph-renders-evaluate-output
@@ -392,11 +393,11 @@
     (t/is (= {:n1 {:id :n1 :kind :decision :result :allow :reason :no-policies}
               :n2 {:id :n2 :kind :check :check-id :alice-can-read :block 1 :result :pass}
               :n3 {:id :n3 :kind :fact :fact [:can "alice" :read "file-1"]
-                   :origin #{0 1} :stated? false}
+                   :origins #{#{0 1}} :stated? false}
               :n4 {:id :n4 :kind :derivation :rule :can-from-right :block 1
-                   :env '{?u "alice" ?a :read ?r "file-1"}}
+                   :origin #{0 1} :env '{?u "alice" ?a :read ?r "file-1"}}
               :n5 {:id :n5 :kind :fact :fact [:right "alice" :read "file-1"]
-                   :origin #{0} :stated? true}}
+                   :origins #{#{0}} :stated? true}}
              (:nodes graph)))
     (t/is (= [{:from :n1 :to :n2 :label :check}
               {:from :n2 :to :n3 :label :because}
@@ -437,7 +438,7 @@
         graph  (sut/graph (:explain result))]
     (t/is (false? (:valid? result)))
     (t/is (= [[:admin "mallory"]] (get-in result [:explain :checks 0 :because])))
-    (t/is (= {[:admin "mallory"] {:origin #{0} :stated? true}}
+    (t/is (= {[:admin "mallory"] {:origins #{#{0}} :stated? true}}
              (get-in result [:explain :facts])))
     (t/is (= [{:from :n1 :to :n2 :label :check}
               {:from :n2 :to :n3 :label :rejected-by}]
@@ -684,7 +685,7 @@
       (t/is (true? (:valid? result)))
       (t/is (= :block-signed-by (first signer)))
       (t/is (= 1 (second signer)))
-      (t/is (= {:origin #{:authorizer} :stated? true}
+      (t/is (= {:origins #{#{:authorizer}} :stated? true}
                (get-in result [:explain :facts signer])))))
   (t/testing "with authorizer :facts, both they and the signer fact are present"
     (let [idp-key (byte-array [1 2 3 4 5])
@@ -754,3 +755,49 @@
 (t/deftest evaluate-rejects-unknown-arity-check-mode
   (t/is (thrown-with-msg? clojure.lang.ExceptionInfo #"arity-check"
                           (sut/evaluate typo-token :arity-check :loud))))
+
+;; ---------------------------------------------------------------------------
+;; Origin sets: a fact keeps every minimal origin set it was found with.
+;; Before 0.14.0 the store kept one origin set per fact — the first
+;; derivation's, or the union for a fact stated twice — so an appended block
+;; could hide a fact from the authorizer. Hiding the fact behind a reject
+;; check or deny policy made the token pass (finding 6).
+;; ---------------------------------------------------------------------------
+
+(def ^:private revocation-authorizer
+  {:facts    [[:revocation-entry "t1"]]
+   :rules    '[{:id :revoked :head [:revoked ?t]
+                :body [[:token-id ?t] [:revocation-entry ?t]]}]
+   :checks   '[{:id :not-revoked :kind :reject :query [[:revoked ?t]]}]
+   :policies '[{:kind :allow :query [[:right "alice" :read]]}]})
+
+(def ^:private revoked-token
+  {:blocks [{:facts [[:right "alice" :read] [:token-id "t1"]]}]})
+
+(t/deftest revoked-token-is-denied
+  (t/is (false? (:valid? (sut/evaluate revoked-token :authorizer revocation-authorizer)))))
+
+(t/deftest appended-rule-cannot-hide-a-revocation
+  (t/testing "a block that derives the authorizer's [:revoked] first does not hide it"
+    (let [attacked (update revoked-token :blocks conj
+                           {:rules '[{:id :pre-empt :head [:revoked ?t]
+                                      :body [[:token-id ?t] [:revocation-entry ?t]]}]})]
+      (t/is (false? (:valid? (sut/evaluate attacked :authorizer revocation-authorizer)))))))
+
+(t/deftest appended-fact-cannot-hide-an-authorizer-fact
+  (t/testing "a block that restates the authorizer's own fact does not hide it"
+    (let [attacked (update revoked-token :blocks conj
+                           {:facts [[:revocation-entry "t1"]]})]
+      (t/is (false? (:valid? (sut/evaluate attacked :authorizer revocation-authorizer)))))))
+
+(t/deftest later-block-cannot-hide-a-block-0-derivation
+  (let [token {:blocks [{:facts [[:a 1]]
+                         :rules '[{:id :c-from-b :head [:c ?x] :body [[:b ?x]]}
+                                  {:id :b-from-a :head [:b ?x] :body [[:a ?x]]}]}
+                        {:rules '[{:id :c-from-a :head [:c ?x] :body [[:a ?x]]}]}]}
+        authz {:policies '[{:kind :allow :query [[:c 1]]}]}]
+    (t/is (true? (:valid? (sut/evaluate token :authorizer authz))))
+    (t/is (= #{#{0}}
+             (get-in (sut/evaluate token :explain? true :authorizer authz)
+                     [:explain :facts [:c 1] :origins]))
+          "block 0's derivation subsumes block 1's #{0 1}")))

@@ -41,26 +41,42 @@
 (defn make-fact-store
   "Creates an empty fact store.
 
-   A fact store maps facts to their origin sets:
-     `{fact -> origin-set}`
+   A fact store maps each fact to the set of origin sets it was found with:
+     `{fact -> #{origin-set ...}}`
 
    Origin model:
      - Authority facts: `#{0}`
      - Block N facts: `#{n}`
      - Authorizer facts: `#{:authorizer}`
-     - Derived facts: union of input origins + rule block index"
+     - Derived facts: union of input origins + rule block index
+
+   A fact can hold several origin sets, because it can be stated or derived
+   in more than one way, and each way is visible to different scopes. A
+   scope sees the fact if _any_ of its origin sets is visible. Keeping only
+   one (the first found, or a union) would let an appended block hide a fact
+   from the authorizer — and a hidden fact behind a reject check or deny
+   policy fails open."
   []
   {})
+
+(defn adds-origin?
+  "True when inserting `fact` with `origin` would make it visible somewhere
+   it isn't yet: no origin set already kept for it is a subset of `origin`."
+  [store fact origin]
+  (not-any? #(set/subset? % origin) (get store fact)))
 
 (defn insert-fact
   "Inserts a fact into the store with the given origin set.
 
-   If the fact already exists, merges origin sets via union."
+   Keeps only minimal origin sets: visibility is `subset?`, so an origin set
+   that contains a kept one adds no visibility and is dropped, and kept
+   supersets of a new origin set are replaced by it. Never unions origins.
+   Returns `store` itself when nothing changes."
   [store fact origin]
-  (update store fact (fn [existing]
-                       (if existing
-                         (set/union existing origin)
-                         origin))))
+  (if (adds-origin? store fact origin)
+    (assoc store fact (conj (into #{} (remove #(set/subset? origin %)) (get store fact))
+                            origin))
+    store))
 
 (defn insert-facts
   "Inserts multiple facts into the store, all with the same origin set."
@@ -71,6 +87,12 @@
   "Returns the total number of unique facts in the store."
   [store]
   (count store))
+
+(defn origin-count
+  "Returns the number of (fact, origin set) entries in the store. The
+   fixpoint is reached when a round adds none."
+  [store]
+  (reduce-kv (fn [n _ origins] (+ n (count origins))) 0 store))
 
 ;;; ---- Scope filtering ----
 
@@ -94,15 +116,17 @@
   (set/subset? fact-origin trusted))
 
 (defn facts-for-scope
-  "Returns a vector of `[origin fact]` pairs visible in the given scope.
-
-   Filters the store to only include facts whose origin sets are subsets
-   of the trusted set. Uses transducer to avoid intermediate seq allocation."
+  "Returns a vector of `[origin fact]` pairs visible in the given scope:
+   one pair per origin set of a fact that is a subset of `trusted`. A fact
+   visible through two incomparable origin sets appears twice, since a
+   derivation from it carries whichever origin it used."
   [store trusted]
   (into []
-        (keep (fn [[fact origin]]
-                (when (visible? origin trusted)
-                  [origin fact])))
+        (mapcat (fn [[fact origins]]
+                  (keep (fn [origin]
+                          (when (visible? origin trusted)
+                            [origin fact]))
+                        origins)))
         store))
 
 (defn unify*
@@ -365,7 +389,8 @@
 
 (def default-limits
   "Fixpoint limits: `:max-iterations` rounds of rule application, and
-   `:max-facts` facts in the store (input and derived). Reaching either
+   `:max-facts` entries in the store (input and derived), where a fact
+   counts once per origin set it holds. Reaching either
    denies.
 
    `:max-derivations` caps how many derivations explain records. It only
@@ -392,7 +417,7 @@
            {:stroopwafel/error :limit-exceeded
             :limit             limit
             :max               (get limits limit)
-            :facts             (fact-count store)
+            :facts             (origin-count store)
             :iterations        iterations}))
 
 (defn- record-derivation
@@ -411,10 +436,12 @@
 (defn- derive-round
   "One round of the fixpoint: fires every block's rules in order, threading
    the store so later blocks see earlier blocks' facts from this round.
-   A fact already in the store is never re-inserted.
+   A derivation is inserted only when it adds an origin set (see
+   `insert-fact`), so the same fact can be found again with an origin that
+   makes it visible to more scopes.
 
    `ex` is explain state (nil when explain is off). In `:first` mode it
-   records each new fact's derivation — the first one found. In `:all`
+   records each derivation that added an origin set. In `:all`
    mode it records every distinct derivation, including of facts already
    in the store; since each round re-fires every rule over every visible
    fact, the final round finds them all."
@@ -429,7 +456,7 @@
         (fn [acc rule]
           (reduce
            (fn [acc {:keys [fact origin env proof] rule-id :rule}]
-             (let [new? (not (contains? (:store acc) fact))
+             (let [new? (adds-origin? (:store acc) fact origin)
                    ex   (:ex acc)]
                (cond-> acc
                  new?
@@ -437,10 +464,11 @@
 
                  (and ex (or new? (= :all (:mode ex))))
                  (update :ex record-derivation fact
-                         {:rule  rule-id
-                          :block block-idx
-                          :env   env
-                          :proof (mapv :fact proof)}))))
+                         {:rule   rule-id
+                          :block  block-idx
+                          :origin origin
+                          :env    env
+                          :proof  (mapv :fact proof)}))))
            acc
            (fire-rule rule visible block-idx)))
         acc rules)))
@@ -451,9 +479,10 @@
   "Applies rules per-block with scope filtering, running to fixpoint.
    Returns `{:store fact-store :derivations derivations :truncated? bool}`.
 
-   `:derivations` maps a fact to a vector of `{:rule :block :env :proof}`,
-   where `:proof` is the facts the rule body matched. With `:explain? true`
-   it holds the first derivation of each derived fact; with
+   `:derivations` maps a fact to a vector of `{:rule :block :origin :env
+   :proof}`, where `:origin` is the origin set the derivation produced and
+   `:proof` is the facts the rule body matched. With `:explain? true` it
+   holds the first derivation for each origin set the fact gained; with
    `:explain? :all`, every distinct derivation of every fact — circular
    ones included. Recording stops at `:max-derivations` (see
    `default-limits`) and sets `:truncated?`. Without `:explain?`,
@@ -467,7 +496,7 @@
    that scope instead of the default `(trusted-origins :authorizer)`.
    This extends authorizer visibility to trusted third-party blocks.
 
-   Runs until no new facts are produced. If a limit (`:limits`, over
+   Runs until a round adds no (fact, origin set) entry. If a limit (`:limits`, over
    `default-limits`) is reached first, throws ex-info with
    `:stroopwafel/error :limit-exceeded`: a store cut short of its
    fixpoint lacks derived facts, and a `:reject` check or `:deny` policy
@@ -485,11 +514,11 @@
             (derive-round indexed-rules store ex authorizer-scope)
             rounds (inc iteration)]
         (cond
-          (= (fact-count new-store) (fact-count store))
+          (= (origin-count new-store) (origin-count store))
           (cond-> {:store new-store :derivations (:derivations ex)}
             (:truncated? ex) (assoc :truncated? true))
 
-          (> (fact-count new-store) max-facts)
+          (> (origin-count new-store) max-facts)
           (throw (limit-exceeded :max-facts limits new-store rounds))
 
           (>= rounds max-iterations)
@@ -512,12 +541,16 @@
   [fact-store scope]
   {:origin-facts (if scope
                    (facts-for-scope fact-store scope)
-                   (into [] (map (fn [[fact origin]] [origin fact])) fact-store))})
+                   (into [] (mapcat (fn [[fact origins]]
+                                      (map (fn [o] [o fact]) origins)))
+                         fact-store))})
 
 (defn explain-facts
   "The explain fact table for `roots`: every fact reachable from them
    through derivation proofs, each once, as
-   `{fact {:origin o :stated? true :derivations [{:rule :block :env :proof}]}}`.
+   `{fact {:origins #{o …} :stated? true
+           :derivations [{:rule :block :origin :env :proof}]}}`.
+   `:origins` are the minimal origin sets the fact was found with.
    `:stated?` is present when a block or the authorizer stated the fact;
    `:derivations` when a rule derived it. Proofs may refer back to facts
    already in the table — that is how circular derivations appear."
@@ -528,7 +561,7 @@
       (if (contains? table fact)
         (recur (pop todo) table)
         (let [ds    (get derivations fact)
-              entry (cond-> {:origin (get fact-store fact)}
+              entry (cond-> {:origins (get fact-store fact)}
                       (contains? stated fact) (assoc :stated? true)
                       (seq ds)                (assoc :derivations ds))]
           (recur (into (pop todo) (mapcat :proof) ds)

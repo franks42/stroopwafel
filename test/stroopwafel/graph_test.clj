@@ -11,14 +11,14 @@
                  :result   :pass
                  :because  [[:can "alice" :read "file-1"]]
                  :facts    {[:can "alice" :read "file-1"]
-                            {:origin      #{0}
+                            {:origins     #{#{0}}
                              :derivations [{:rule  :can-from-right
                                             :block 0
                                             :env   '{?u "alice"}
                                             :proof [[:right "alice" :read "file-1"]
                                                     [:resource "file-1"]]}]}
-                            [:right "alice" :read "file-1"] {:origin #{0} :stated? true}
-                            [:resource "file-1"]            {:origin #{0} :stated? true}}}
+                            [:right "alice" :read "file-1"] {:origins #{#{0}} :stated? true}
+                            [:resource "file-1"]            {:origins #{#{0}} :stated? true}}}
         graph   (sut/explain->graph explain)]
     (t/is (= :n1 (:root graph)))
     (t/is (= [:check :fact :derivation :fact :fact]
@@ -42,13 +42,13 @@
   (t/testing "a :because fact missing from :facts (e.g. truncated) is still a node"
     (let [graph (sut/explain->graph {:type :check :check-id :c :result :pass
                                      :because [[:user "alice"]]})]
-      (t/is (= {:id :n2 :kind :fact :fact [:user "alice"] :origin nil :stated? false}
+      (t/is (= {:id :n2 :kind :fact :fact [:user "alice"] :origins nil :stated? false}
                (get-in graph [:nodes :n2]))))))
 
 (t/deftest explain->graph-deterministic-ids
   (let [explain {:type :check :check-id :c1 :result :pass
                  :because [[:user "alice"]]
-                 :facts {[:user "alice"] {:origin #{0} :stated? true}}}]
+                 :facts {[:user "alice"] {:origins #{#{0}} :stated? true}}}]
     (t/is (= (sut/explain->graph explain) (sut/explain->graph explain)))))
 
 (t/deftest unknown-explain-error-does-not-leak-facts
