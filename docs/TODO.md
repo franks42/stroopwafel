@@ -25,6 +25,6 @@ From `docs/review-swival-inkling-2-mini.md` (revised 2026-11-23), in priority or
 - [x] ~~No policies throws — `evaluate`/`eval-token` throw `:stroopwafel/error :no-policies` when `:policies` is missing/empty or `:authorizer` is absent; drop the `:no-policies` decision reason; checks-only tests use `{:kind :allow :query []}`; see review Decisions; 0.15.0~~ superseded by the next item
 - [x] No policies denies — `:reason :no-policies` and a `{:type :no-policies}` warning, no throw; checks-only callers use `{:kind :allow :query []}`; see review Decisions; 0.15.0
 - [x] Unknown keyword arguments to `evaluate` throw — a typo (`:authoriser`) silently dropped the authorizer and its deny policies; 0.15.0 (authorizer keys too: `:check` dropped checks)
-- [ ] Release 0.15.0 — breaking: no policies denies (with a warning); unknown options and authorizer keys throw
+- [ ] Release 0.15.0 — breaking: no policies denies (with a warning); unknown options and authorizer keys throw (bumped; tag and deploy pending)
 - [ ] stroopwafel-pdp: pass the engine's `:warnings` through (it returns only `:allowed?`, `:error`, `:explain`), so its callers see `:no-policies`; review the `(or policies [])` fallback (`pdp/core.clj:173`, `spki/core.clj:326`) and tests that omit policies, which will now deny — separate repo, after 0.15.0
 - [x] Bump to 0.13.0 after the arity fix — strict arity is a behaviour change that can reject tokens that pass today; `CHANGELOG.md` is kept current with each commit
