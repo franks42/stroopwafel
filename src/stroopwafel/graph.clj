@@ -4,7 +4,9 @@
    transformation — no authorization logic.
 
    Nodes:
-     - `:decision`     — the result and its reason (the root of a decision)
+     - `:decision`     — the result and its reason (the root of a decision),
+                         plus the `:error` when a limit or an arity mismatch
+                         denied before any check ran
      - `:check`        — a check, with its block and result
      - `:policy`       — an evaluated policy: index, id, effect, result
      - `:fact`         — a fact, with its origin sets and whether a block stated it
@@ -150,9 +152,10 @@
         state (case etype
                 :decision
                 (let [[root state] (new-node state nil nil
-                                             {:kind   :decision
-                                              :result (:result explain)
-                                              :reason (:reason explain)})]
+                                             (cond-> {:kind   :decision
+                                                      :result (:result explain)
+                                                      :reason (:reason explain)}
+                                               (:error explain) (assoc :error (:error explain))))]
                   (walk state (:facts explain)
                         (push-children []
                                        root

@@ -676,19 +676,25 @@
     (t/is (= [:allow :policy []] ((juxt :result :reason :checks) explain)))))
 
 (t/deftest explain-and-graph-at-a-limit
-  (let [token  {:blocks [{:facts [[:edge 0 1] [:edge 1 2] [:edge 2 3]]
-                          :rules '[{:id :r :head [:reach ?a ?b] :body [[:edge ?a ?b]]}
-                                   {:id :t :head [:reach ?a ?c]
-                                    :body [[:reach ?a ?b] [:edge ?b ?c]]}]}]}
-        result (sut/evaluate token :authorizer allow-all :explain? true :limits {:max-facts 5})
-        graph  (sut/graph (:explain result))]
-    (t/is (= {:type   :decision
-              :result :deny
-              :reason :limit-exceeded
-              :error  (:error result)}
-             (:explain result)))
-    (t/is (= {:n1 {:id :n1 :kind :decision :result :deny :reason :limit-exceeded}}
-             (:nodes graph)))))
+  (let [token {:blocks [{:facts [[:edge 0 1] [:edge 1 2] [:edge 2 3]]
+                         :rules '[{:id :r :head [:reach ?a ?b] :body [[:edge ?a ?b]]}
+                                  {:id :t :head [:reach ?a ?c]
+                                   :body [[:reach ?a ?b] [:edge ?b ?c]]}]}]}]
+    (doseq [mode [true :all]]
+      (t/testing (str ":explain? " mode)
+        (let [result (sut/evaluate token :authorizer allow-all :explain? mode
+                                   :limits {:max-facts 5})
+              graph  (sut/graph (:explain result))]
+          (t/is (= :limit-exceeded (get-in result [:error :type])))
+          (t/is (= {:type   :decision
+                    :result :deny
+                    :reason :limit-exceeded
+                    :error  (:error result)}
+                   (:explain result)))
+          (t/is (= {:n1 {:id :n1 :kind :decision :result :deny :reason :limit-exceeded
+                         :error (:error result)}}
+                   (:nodes graph))
+                "the graph keeps the limit, max and counts"))))))
 
 (t/deftest graph-shows-checks-and-policies
   (let [graph (sut/graph (:explain (sut/evaluate policy-token :explain? true
@@ -793,8 +799,14 @@
   (t/is (= [] (sut/check-arity {:blocks [{:facts  [[:a 1] [:b 1 2]]
                                           :checks [{:id :any :query '[[?p 1]]}]}]}))))
 
-(t/deftest evaluate-warns-on-arity-mismatch-by-default
-  (let [result (sut/evaluate typo-token :authorizer allow-all)]
+(t/deftest evaluate-denies-on-arity-mismatch-by-default
+  (t/is (= {:valid? false
+            :error  {:type :arity-mismatch :mismatches [typo-mismatch]}}
+           (sut/evaluate typo-token :authorizer allow-all))
+        "a reject check that could never fire denies (0.16.0)"))
+
+(t/deftest evaluate-can-warn-on-arity-mismatch
+  (let [result (sut/evaluate typo-token :authorizer allow-all :arity-check :warn)]
     (t/is (true? (:valid? result)) "the decision is unchanged")
     (t/is (= [(assoc typo-mismatch :type :arity-mismatch)] (:warnings result))))
   (t/is (= {:valid? true} (sut/evaluate delegation-token :authorizer allow-all)) "no :warnings key when clean"))
@@ -809,6 +821,12 @@
                         :error  {:type :arity-mismatch :mismatches [typo-mismatch]}}}
              result)))
   (t/is (= {:valid? true} (sut/evaluate delegation-token :authorizer allow-all :arity-check :error))))
+
+(t/deftest explain-and-graph-on-an-arity-mismatch
+  (let [result (sut/evaluate typo-token :authorizer allow-all :explain? true)]
+    (t/is (= {:n1 {:id :n1 :kind :decision :result :deny :reason :arity-mismatch
+                   :error {:type :arity-mismatch :mismatches [typo-mismatch]}}}
+             (:nodes (sut/graph (:explain result)))))))
 
 (t/deftest evaluate-arity-check-off
   (t/is (= {:valid? true} (sut/evaluate typo-token :authorizer allow-all :arity-check :off))))

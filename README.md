@@ -52,8 +52,9 @@ Like a stroopwafel: two layers with something sealed between them.
   A pattern only matches facts of the same length. `sw/check-arity` lists
   predicates used with different lengths (almost always a typo: a reject
   check or deny policy that can never fire); run it on a policy set
-  before storing it. `evaluate` reports them as `:warnings` by default;
-  `:arity-check :error` denies instead, `:off` skips the check.
+  before storing it. `evaluate` denies on a mismatch by default
+  (`:reason :arity-mismatch`, with the mismatches in `:error`);
+  `:arity-check :warn` only adds `:warnings`, `:off` skips the check.
 - **Rules** derive facts: `{:id :head [...] :body [[...] ...]}`, with
   optional `:when` guards and `:let` bindings. Rules run to a fixpoint,
   so recursive rules (transitive closure) work, within limits (below).
@@ -83,6 +84,10 @@ Like a stroopwafel: two layers with something sealed between them.
       (throw (ex-info "No policies" {:authorizer authz})))
     result)
   ```
+
+  Every warning has a `:type` (`:no-policies`, or `:arity-mismatch`
+  with `:arity-check :warn`), so a caller that wants all of them to be
+  errors can throw on `(seq (:warnings result))` instead.
 
   Only a malformed call throws: unknown options or authorizer keys
   (`:stroopwafel/error :unknown-keys`, so a typo like `:authoriser` can't
@@ -117,6 +122,9 @@ Like a stroopwafel: two layers with something sealed between them.
   explain is flagged `:truncated?`, the decision is unchanged).
   `sw/graph` turns it into decision, check, policy, fact and derivation
   nodes; a fact reached along several paths, or in a loop, is one node.
+  When a limit or an arity mismatch denied before any check ran, the
+  decision node carries the `:error` (limit, max and counts, or the
+  mismatches).
 
 ## Limits fail closed
 

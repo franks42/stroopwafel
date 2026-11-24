@@ -3,6 +3,42 @@
 All notable changes to stroopwafel. Each entry reflects committed work.
 History before 0.13.0 is in `context.md` (## History).
 
+## Unreleased (0.16.0)
+
+From the second review (`docs/review2-swival-inkling-2-mini.md`).
+
+### Breaking
+
+- **`:arity-check` defaults to `:error`**: a predicate used with
+  different lengths now denies (`:reason :arity-mismatch`, the
+  mismatches in `:error`) instead of only adding a warning. A mismatched
+  pattern never matches, so a reject check or deny policy with a typo
+  silently never fired — a fail-open that only callers reading
+  `:warnings` noticed. It is still a decision, not a throw. `:arity-check
+  :warn` keeps the old behaviour, `:off` skips the check.
+
+### Added
+
+- **The graph keeps error details**: when a limit or an arity mismatch
+  denied before any check ran, the `:decision` node carries the `:error`
+  (limit, max and counts, or the mismatches); it used to show only the
+  reason.
+
+### Fixed
+
+- `normalize-facts` (used by `eval-body`) takes `[set x]` for an
+  `[origin fact]` pair only when `x` is a vector, so an odd bare fact
+  like `[#{0} :x]` is no longer misread.
+
+### Docs and tests
+
+- `arity-mismatches` documents its location keys; the README shows
+  treating every warning as an error.
+- `explain-all-matches-naive-oracle`: on 400 random programs, the
+  derivations `:explain? :all` records are exactly those that re-firing
+  every rule finds (1213 derivations). The graph of a limit-exceeded
+  decision is tested with `:explain? :all` too.
+
 ## 0.15.0 — 2026-11-23
 
 ### Breaking

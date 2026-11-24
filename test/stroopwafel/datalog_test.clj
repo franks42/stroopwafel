@@ -56,6 +56,12 @@
              (:env (first results))))
     (t/is (= 2 (count (:proof (first results)))))))
 
+(t/deftest eval-body-normalizes-facts
+  (t/testing "an [origin-set fact] pair passes through"
+    (t/is (= '[{?x 1}] (map :env (sut/eval-body '[[:a ?x]] [[#{1} [:a 1]]])))))
+  (t/testing "a 2-element fact starting with a set is a bare fact, not a pair"
+    (t/is (= '[{?k :x}] (map :env (sut/eval-body '[[#{0} ?k]] [[#{0} :x]]))))))
+
 (t/deftest instantiate-test
   (t/is (= [:can "alice" :read "file-1"]
            (sut/instantiate
@@ -763,21 +769,32 @@
 ;; its turn, until a round changes nothing. The engine may evaluate smarter
 ;; (semi-naive, indexed), but must reach exactly the same store.
 
-(defn- naive-fixpoint [indexed-rules store authorizer-scope]
-  (loop [store store]
+(defn- naive-run
+  "The oracle. Returns `{:store … :derivations {fact #{derivation …}}}`,
+   every distinct derivation found along the way, as `:explain? :all`
+   records them."
+  [indexed-rules store authorizer-scope]
+  (loop [{:keys [store] :as acc} {:store store :derivations {}}]
     (let [next (reduce
-                (fn [s [b rules]]
+                (fn [acc [b rules]]
                   (let [trusted (if (and (= b :authorizer) authorizer-scope)
                                   authorizer-scope
                                   (sut/trusted-origins b))
-                        visible (sut/facts-for-scope s trusted)]
-                    (reduce (fn [s rule]
-                              (reduce (fn [s {:keys [fact origin]}]
-                                        (sut/insert-fact s fact origin))
-                                      s (sut/fire-rule rule visible b)))
-                            s rules)))
-                store indexed-rules)]
-      (if (identical? next store) store (recur next)))))
+                        visible (sut/facts-for-scope (:store acc) trusted)]
+                    (reduce (fn [acc rule]
+                              (reduce (fn [acc {:keys [fact origin env proof] rule-id :rule}]
+                                        (-> acc
+                                            (update :store sut/insert-fact fact origin)
+                                            (update-in [:derivations fact] (fnil conj #{})
+                                                       {:rule rule-id :block b :origin origin
+                                                        :env env :proof (mapv :fact proof)})))
+                                      acc (sut/fire-rule rule visible b)))
+                            acc rules)))
+                acc indexed-rules)]
+      (if (identical? (:store next) store) next (recur next)))))
+
+(defn- naive-fixpoint [indexed-rules store authorizer-scope]
+  (:store (naive-run indexed-rules store authorizer-scope)))
 
 (defn- random-program
   "A small random program over predicates :p :q (arity 2) and :r (arity 1),
@@ -827,6 +844,25 @@
                  (:store (sut/fixpoint indexed store :authorizer-scope scope :limits limits)))
               (str "program " n))))))
 
+(t/deftest explain-all-matches-naive-oracle
+  (t/testing "every derivation :explain? :all records is one re-firing every rule finds, and vice versa"
+    (let [rnd (java.util.Random. 7)]
+      (doseq [n (range 400)]
+        (let [{:keys [blocks authorizer third-party]} (random-program rnd)
+              store   (reduce (fn [s [i {:keys [facts]}]] (sut/insert-facts s facts #{i}))
+                              (sut/insert-facts {} (:facts authorizer) #{:authorizer})
+                              (map-indexed vector blocks))
+              indexed (conj (vec (map-indexed (fn [i b] [i (:rules b)]) blocks))
+                            [:authorizer (:rules authorizer)])
+              scope   (when third-party #{0 :authorizer third-party})
+              limits  {:max-iterations 1000 :max-facts 100000 :max-derivations 1000000}
+              result  (sut/fixpoint indexed store :authorizer-scope scope :limits limits
+                                    :explain? :all)]
+          (t/is (not (:truncated? result)))
+          (t/is (= (:derivations (naive-run indexed store scope))
+                   (update-vals (:derivations result) set))
+                (str "program " n)))))))
+
 (t/deftest eval-token-no-policies-and-unknown-keys
   (let [token {:blocks [{:facts [[:x]]}]}
         err   (fn [f] (try (f) nil
@@ -839,11 +875,11 @@
       (t/is (= {:result :deny} (sut/eval-policies [] {} #{0}))))
     (t/testing "warnings combine: arity mismatches, then no policies"
       (t/is (= [:arity-mismatch :no-policies]
-               (map :type (:warnings (sut/eval-token {:blocks [{:facts [[:a 1] [:a 1 2]]}]}))))))
-    (t/testing "the no-policies warning survives an :arity-check :error deny"
+               (map :type (:warnings (sut/eval-token {:blocks [{:facts [[:a 1] [:a 1 2]]}]}
+                                                     :arity-check :warn))))))
+    (t/testing "the no-policies warning survives an arity-mismatch deny (the default)"
       (t/is (= [{:type :no-policies}]
-               (:warnings (sut/eval-token {:blocks [{:facts [[:a 1] [:a 1 2]]}]}
-                                          :arity-check :error)))))
+               (:warnings (sut/eval-token {:blocks [{:facts [[:a 1] [:a 1 2]]}]})))))
     (t/testing "unknown keys still throw: a malformed call, not a policy state"
       (t/is (= :unknown-keys (err #(sut/eval-token token :authorizer allow-all :limit {}))))
       (t/is (= :unknown-keys (err #(sut/eval-token token :authorizer (assoc allow-all :policy []))))))))

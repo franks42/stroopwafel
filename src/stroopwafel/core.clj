@@ -40,16 +40,17 @@
            limit before the fixpoint denies (fail closed); unknown keys or
            non-positive values throw. `:max-derivations` (10000) only caps
            explain data
-         `:arity-check` — `:warn` (default), `:error` or `:off`: whether
-           predicates used with different lengths add `:warnings`, deny,
-           or are ignored (see `check-arity`)
+         `:arity-check` — `:error` (default), `:warn` or `:off`: whether
+           predicates used with different lengths deny (`:reason
+           :arity-mismatch`), only add `:warnings`, or are ignored (see
+           `check-arity`)
 
    Returns:
      ```clojure
      {:valid?  boolean
       :explain decision map (when :explain?)
       :error   {:type :limit-exceeded …} or {:type :arity-mismatch …}
-               (only when a limit was reached, or with :arity-check :error)
+               (only when a limit was reached, or on an arity mismatch)
       :warnings [{:type :arity-mismatch …} (only with :arity-check :warn)
                  {:type :no-policies}]}         (when there are no policies)
      ```
@@ -69,7 +70,7 @@
      - Block N checks see: #{0 N :authorizer}
      - Authorizer policies see: #{0 :authorizer} (+ trusted third-party indices)"
   [token & {:keys [explain? authorizer limits arity-check]
-            :or   {arity-check :warn}
+            :or   {arity-check :error}
             :as   opts}]
   (datalog/check-keys "evaluate options" opts
                       #{:explain? :authorizer :limits :arity-check})
