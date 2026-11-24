@@ -152,7 +152,7 @@ trust (stroopwafel-pdp). The design is in
 
 ```clojure
 ;; deps.edn
-{:deps {com.github.franks42/stroopwafel {:mvn/version "0.14.1"}}}
+{:deps {com.github.franks42/stroopwafel {:mvn/version "0.14.2"}}}
 ```
 
 ```sh

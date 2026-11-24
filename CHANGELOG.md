@@ -3,7 +3,7 @@
 All notable changes to stroopwafel. Each entry reflects committed work.
 History before 0.13.0 is in `context.md` (## History).
 
-## Unreleased
+## 0.14.2 — 2026-11-23
 
 ### Performance
 

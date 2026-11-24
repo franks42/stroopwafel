@@ -1,6 +1,6 @@
 # Stroopwafel: context
 
-## What this is (0.14.1)
+## What this is (0.14.2)
 
 Stroopwafel is a pure Datalog engine for authorization decisions. Facts,
 rules, checks and policies go in; `{:valid? …}` comes out. It has no
@@ -150,6 +150,7 @@ code yet.
 | 0.13.0  | strict pattern length (fixes a bypass); explain shows the decision and rule proofs; 106 tests    |
 | 0.14.0  | every origin set kept per fact (appended blocks could hide facts); 113 tests                     |
 | 0.14.1  | fixpoint stops only when the store is unchanged (0.14.0 could stop early); 115 tests             |
+| 0.14.2  | semi-naive fixpoint and predicate index (same results, ~50× faster); 116 tests                   |
 
 ## Lineage
 
