@@ -496,7 +496,9 @@
    that scope instead of the default `(trusted-origins :authorizer)`.
    This extends authorizer visibility to trusted third-party blocks.
 
-   Runs until a round adds no (fact, origin set) entry. If a limit (`:limits`, over
+   Runs until a round leaves the store unchanged — not merely its size: a
+   smaller origin set replacing a kept superset makes a fact visible to more
+   scopes without changing the count. If a limit (`:limits`, over
    `default-limits`) is reached first, throws ex-info with
    `:stroopwafel/error :limit-exceeded`: a store cut short of its
    fixpoint lacks derived facts, and a `:reject` check or `:deny` policy
@@ -514,7 +516,11 @@
             (derive-round indexed-rules store ex authorizer-scope)
             rounds (inc iteration)]
         (cond
-          (= (origin-count new-store) (origin-count store))
+          ;; Not a count comparison: a smaller origin set replacing a kept
+          ;; superset leaves the count unchanged but makes the fact visible
+          ;; to more scopes, which may then derive more. `insert-fact`
+          ;; returns the store itself when nothing changes.
+          (identical? new-store store)
           (cond-> {:store new-store :derivations (:derivations ex)}
             (:truncated? ex) (assoc :truncated? true))
 

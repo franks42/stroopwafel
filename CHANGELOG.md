@@ -3,7 +3,23 @@
 All notable changes to stroopwafel. Each entry reflects committed work.
 History before 0.13.0 is in `context.md` (## History).
 
+## Unreleased
+
+### Security
+
+- **The fixpoint could stop before every scope derived from a fact**
+  (high; 0.14.0 only, introduced by its fix). It stopped when the number
+  of (fact, origin set) entries was unchanged, but a smaller origin set
+  replacing a kept superset leaves the count unchanged while making the
+  fact visible to more scopes. An appended block could use this to keep
+  block 0 from deriving a revocation the authorizer rejects on, making a
+  revoked token valid. The fixpoint now stops only when a round leaves the
+  store unchanged. Exploit and workaround: the addendum to
+  `docs/security-advisory-2026-11-23-origin-hiding.md`.
+
 ## 0.14.0 — 2026-11-23
+
+_Affected by the early-stop issue above; upgrade to the next release._
 
 ### Security
 

@@ -801,3 +801,44 @@
              (get-in (sut/evaluate token :explain? true :authorizer authz)
                      [:explain :facts [:c 1] :origins]))
           "block 0's derivation subsumes block 1's #{0 1}")))
+
+;; 0.14.0: the fixpoint stopped when the (fact, origin set) count was
+;; unchanged. A smaller origin set replacing a kept superset leaves the count
+;; unchanged but makes the fact visible to more scopes, so a round whose only
+;; change was such a replacement ended evaluation before those scopes derived
+;; from it. See docs/security-advisory-2026-11-23-origin-hiding.md (addendum).
+
+(def ^:private listed-revocation-authorizer
+  {:facts    [[:revocation-entry "t1"]]
+   :rules    '[{:id :pending :head [:pending ?t] :body [[:revocation-entry ?t]]}
+               {:id :listed  :head [:listed ?t]  :body [[:pending ?t]]}]
+   :checks   '[{:id :not-revoked :kind :reject :query [[:revoked ?t]]}]
+   :policies '[{:kind :allow :query [[:right "alice" :read]]}]})
+
+(def ^:private listed-revocation-token
+  {:blocks [{:facts [[:right "alice" :read] [:token-id "t1"]]
+             :rules '[{:id :revoked :head [:revoked ?t]
+                       :body [[:token-id ?t] [:listed ?t]]}]}]})
+
+(t/deftest origin-replacement-does-not-end-the-fixpoint
+  (t/testing "the unattacked token is revoked"
+    (t/is (false? (:valid? (sut/evaluate listed-revocation-token
+                                         :authorizer listed-revocation-authorizer)))))
+  (t/testing "an appended block deriving [:listed] early does not stop block 0 deriving [:revoked]"
+    (let [attacked (update listed-revocation-token :blocks conj
+                           {:rules '[{:id :early :head [:listed ?t]
+                                      :body [[:revocation-entry ?t]]}]})]
+      (t/is (false? (:valid? (sut/evaluate attacked
+                                           :authorizer listed-revocation-authorizer)))))))
+
+(t/deftest scopes-derive-from-a-replaced-origin
+  (t/testing "block 2 sees [:f 1] once the authorizer's #{:authorizer} replaces #{1 :authorizer}"
+    (let [token {:blocks [{:facts [[:t 0]]}
+                          {:rules '[{:id :b1 :head [:f ?x] :body [[:base ?x]]}]}
+                          {:rules  '[{:id :b2 :head [:g ?x] :body [[:f ?x]]}]
+                           :checks '[{:id :need-g :query [[:g 1]]}]}]}
+          authz {:facts    [[:base 1]]
+                 :rules    '[{:id :mid :head [:mid ?x] :body [[:base ?x]]}
+                             {:id :f :head [:f ?x] :body [[:mid ?x]]}]
+                 :policies '[{:kind :allow :query [[:base 1]]}]}]
+      (t/is (true? (:valid? (sut/evaluate token :authorizer authz)))))))
