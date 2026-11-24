@@ -3,7 +3,7 @@
 All notable changes to stroopwafel. Each entry reflects committed work.
 History before 0.13.0 is in `context.md` (## History).
 
-## Unreleased
+## 0.14.1 — 2026-11-23
 
 ### Security
 
@@ -19,7 +19,7 @@ History before 0.13.0 is in `context.md` (## History).
 
 ## 0.14.0 — 2026-11-23
 
-_Affected by the early-stop issue above; upgrade to the next release._
+_Affected by the early-stop issue fixed in 0.14.1; don't deploy it._
 
 ### Security
 
