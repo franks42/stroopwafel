@@ -71,7 +71,13 @@ input.
    policies.
 4. **Policies** belong to the authorizer and run in order after all checks
    pass. The first match wins. If none matches, the result is deny (closed
-   world). If there are no policies at all, the result is allow.
+   world). No policies at all denies too (since 0.15.0; it used to allow),
+   with `:reason :no-policies` and a `{:type :no-policies}` warning: the
+   decision is binary, and only a matching `:allow` allows (XACML's
+   NotApplicable left to the PEP was the cautionary tale).
+   `{:kind :allow :query []}` is the explicit allow-all. Only a malformed
+   call throws: unknown options or authorizer keys (`:unknown-keys`),
+   invalid `:limits` or `:arity-check`.
 5. **Third-party blocks.** A block's `:external-key` that appears in
    `:trusted-external-keys` makes that block visible to the authorizer and
    adds `[:block-signed-by idx key]`.

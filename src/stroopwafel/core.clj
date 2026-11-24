@@ -26,10 +26,14 @@
      - keyword args:
          `:explain?`   (true or :all) — include the decision explain in result
          `:authorizer` (map)     — authorizer context with:
+           `:policies` — ordered allow/deny policies (first match wins).
+             Only a matching `:allow` allows: with no policies (or no
+             authorizer) the result is deny, with a `{:type :no-policies}`
+             warning. To allow whatever passes the checks, use
+             `{:kind :allow :query []}`
            `:facts`    — additional authorizer facts
            `:checks`   — additional authorizer checks
            `:rules`    — additional authorizer rules
-           `:policies` — ordered allow/deny policies (first match wins)
            `:trusted-external-keys` — vector of trusted third-party key bytes
          `:limits`     (map)     — fixpoint limits over `datalog/default-limits`:
            `:max-iterations` (100) and `:max-facts` (1000). Reaching a
@@ -46,14 +50,31 @@
       :explain decision map (when :explain?)
       :error   {:type :limit-exceeded …} or {:type :arity-mismatch …}
                (only when a limit was reached, or with :arity-check :error)
-      :warnings [{:type :arity-mismatch …}] (only with :arity-check :warn)}
+      :warnings [{:type :arity-mismatch …} (only with :arity-check :warn)
+                 {:type :no-policies}]}         (when there are no policies)
      ```
+
+   The decision is binary and closed-world: whenever no policy allows —
+   none matches, none exists, a check failed, a limit was reached — it is
+   deny, and `:reason` (in the explain) and `:warnings` say why. The
+   caller never gets a third outcome to interpret; one that treats a
+   missing policy set as an error can check the warnings and throw.
+
+   Throws only on a malformed call (ex-data `:stroopwafel/error`):
+   `:unknown-keys` (a misspelled option or authorizer key, which would
+   otherwise be silently ignored), and invalid `:limits` or `:arity-check`.
 
    Block scope isolation:
      - Block 0 checks see: #{0 :authorizer}
      - Block N checks see: #{0 N :authorizer}
      - Authorizer policies see: #{0 :authorizer} (+ trusted third-party indices)"
-  [token & {:keys [explain? authorizer limits arity-check] :or {arity-check :warn}}]
+  [token & {:keys [explain? authorizer limits arity-check]
+            :or   {arity-check :warn}
+            :as   opts}]
+  (datalog/check-keys "evaluate options" opts
+                      #{:explain? :authorizer :limits :arity-check})
+  (datalog/check-keys "authorizer keys" authorizer
+                      #{:facts :rules :checks :policies :trusted-external-keys})
   (let [blocks (:blocks token)
 
         ;; Extract logical content from each block

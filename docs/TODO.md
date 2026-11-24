@@ -16,10 +16,15 @@ From `docs/review-swival-inkling-2-mini.md` (revised 2026-11-23), in priority or
 - [x] Keep every minimal origin set per fact — finding 6, critical: an appended block could hide authorizer facts (revoked token became valid); `docs/security-advisory-2026-11-23-origin-hiding.md`
 - [x] Release 0.14.0 with the origin fix — bump, tag, deploy to Clojars; 0.12.0 and 0.13.0 are affected (tagged v0.14.0; Clojars deploy is Frank's)
 - [x] Fixpoint ended early on an origin replacement (0.14.0, fail-open) — fixed on `fix/fixpoint-termination`: stop only when the store is unchanged; advisory addendum; release 0.14.1 (tagged v0.14.1; Clojars deploy is Frank's)
-- [x] Semi-naive fixpoint — rules re-fire over every fact each round; a 400-step chain takes ~9 s (JVM) with or without explain, ~40 s on bb (now 167 ms on the JVM; checked against a naive oracle on 400 random programs; release 0.14.2: bumped, tag and deploy pending)
+- [x] Semi-naive fixpoint — rules re-fire over every fact each round; a 400-step chain takes ~9 s (JVM) with or without explain, ~40 s on bb (now 167 ms on the JVM; checked against a naive oracle on 400 random programs; release 0.14.2: tagged v0.14.2; Clojars deploy is Frank's)
 - [x] CI — GitHub Actions running `clojure -X:test` on push/PR (`.github/workflows/test.yml`: JVM tests + JAR build, and `bb test:bb`)
 - [x] `deps.edn` — remove the nonexistent `"resources"` path
 - [x] Test `authorizer-with-signers` when the authorizer has no `:facts`
 - [x] Document within-round block ordering — later blocks see earlier blocks' derived facts in the same round; README and architecture docs (README model + context.md; order can't change the fixpoint)
 - [x] Up-front arity validation for reject checks / deny policies — with strict matching, a reject pattern of the wrong arity silently never fires (fail open); `sw/check-arity` + `evaluate :arity-check :warn|:error|:off` (see review Decisions)
+- [x] ~~No policies throws — `evaluate`/`eval-token` throw `:stroopwafel/error :no-policies` when `:policies` is missing/empty or `:authorizer` is absent; drop the `:no-policies` decision reason; checks-only tests use `{:kind :allow :query []}`; see review Decisions; 0.15.0~~ superseded by the next item
+- [x] No policies denies — `:reason :no-policies` and a `{:type :no-policies}` warning, no throw; checks-only callers use `{:kind :allow :query []}`; see review Decisions; 0.15.0
+- [x] Unknown keyword arguments to `evaluate` throw — a typo (`:authoriser`) silently dropped the authorizer and its deny policies; 0.15.0 (authorizer keys too: `:check` dropped checks)
+- [ ] Release 0.15.0 — breaking: no policies denies (with a warning); unknown options and authorizer keys throw
+- [ ] stroopwafel-pdp: pass the engine's `:warnings` through (it returns only `:allowed?`, `:error`, `:explain`), so its callers see `:no-policies`; review the `(or policies [])` fallback (`pdp/core.clj:173`, `spki/core.clj:326`) and tests that omit policies, which will now deny — separate repo, after 0.15.0
 - [x] Bump to 0.13.0 after the arity fix — strict arity is a behaviour change that can reject tokens that pass today; `CHANGELOG.md` is kept current with each commit
