@@ -50,7 +50,7 @@ Like a stroopwafel: two layers with something sealed between them.
 
 - **Facts** are vectors, for example `[:right "alice" :read "/api/data"]`.
   A pattern only matches facts of the same length. `sw/check-arity` lists
-  predicates used with different lengths (almost always a typo: a reject
+  predicates (keywords in first position) used with different lengths (almost always a typo: a reject
   check or deny policy that can never fire); run it on a policy set
   before storing it. `evaluate` denies on a mismatch by default
   (`:reason :arity-mismatch`, with the mismatches in `:error`);

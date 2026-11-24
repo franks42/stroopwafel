@@ -3,6 +3,18 @@
 All notable changes to stroopwafel. Each entry reflects committed work.
 History before 0.13.0 is in `context.md` (## History).
 
+## Unreleased (0.16.1)
+
+### Fixed
+
+- **The arity check only counts keyword predicates.** It took the first
+  element of every fact and pattern for a predicate, so positional
+  records led by a value — stroopwafel-pdp stores assertions as
+  `[signer ts not-before not-after :type id & args]` — were reported as
+  one "predicate" (the signer's key id) with several lengths. With
+  0.16.0's `:error` default that denied every decision on them. Patterns
+  that start with a value or a variable are now skipped.
+
 ## 0.16.0 — 2026-11-24
 
 From the second review (`docs/review2-swival-inkling-2-mini.md`).

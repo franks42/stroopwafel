@@ -965,8 +965,12 @@
    | `:index` | a policy without an `:id`: its position in `:policies`
 
    For example `{:block 0 :in :rule-body :id :can}` or
-   `{:block :authorizer :in :policy :index 1}`. Patterns whose first
-   element is a variable are skipped. Empty when consistent."
+   `{:block :authorizer :in :policy :index 1}`.
+
+   Only patterns that start with a keyword count: a predicate is a
+   keyword. Positional records that start with a value (say, a signer's
+   key id) and patterns that start with a variable are skipped, since
+   their first element doesn't name a relation. Empty when consistent."
   [blocks authorizer]
   (let [uses
         (for [[block src] (concat (map-indexed vector blocks)
@@ -982,8 +986,7 @@
                               [:policy (if id [:id id] [:index i]) query])
                             (:policies src)))
               pattern patterns
-              :when (and (sequential? pattern) (seq pattern)
-                         (not (variable? (first pattern))))]
+              :when (and (sequential? pattern) (keyword? (first pattern)))]
           [(first pattern) (count pattern)
            (cond-> {:block block :in in}
              (and id-of (not= in :policy)) (assoc :id id-of)
