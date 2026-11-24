@@ -15,8 +15,8 @@ From `docs/review-swival-inkling-2-mini.md` (revised 2026-11-23), in priority or
 - [x] All-reasons explain (`:explain? :all`) — every derivation per fact, flat table, derivation cap; decided: show circular reasons, one flat shape for both modes
 - [x] Keep every minimal origin set per fact — finding 6, critical: an appended block could hide authorizer facts (revoked token became valid); `docs/security-advisory-2026-11-23-origin-hiding.md`
 - [x] Release 0.14.0 with the origin fix — bump, tag, deploy to Clojars; 0.12.0 and 0.13.0 are affected (tagged v0.14.0; Clojars deploy is Frank's)
-- [ ] Fixpoint ended early on an origin replacement (0.14.0, fail-open) — fixed on `fix/fixpoint-termination`: stop only when the store is unchanged; advisory addendum; release 0.14.1 (bumped; tag and deploy pending)
-- [ ] Semi-naive fixpoint — rules re-fire over every fact each round; a 400-step chain takes ~9 s (JVM) with or without explain, ~40 s on bb
+- [x] Fixpoint ended early on an origin replacement (0.14.0, fail-open) — fixed on `fix/fixpoint-termination`: stop only when the store is unchanged; advisory addendum; release 0.14.1 (tagged v0.14.1; Clojars deploy is Frank's)
+- [x] Semi-naive fixpoint — rules re-fire over every fact each round; a 400-step chain takes ~9 s (JVM) with or without explain, ~40 s on bb (now 167 ms on the JVM; checked against a naive oracle on 400 random programs; on `perf/semi-naive`)
 - [x] CI — GitHub Actions running `clojure -X:test` on push/PR (`.github/workflows/test.yml`: JVM tests + JAR build, and `bb test:bb`)
 - [x] `deps.edn` — remove the nonexistent `"resources"` path
 - [x] Test `authorizer-with-signers` when the authorizer has no `:facts`

@@ -59,7 +59,12 @@ input.
    `:explain? true` keeps. `:max-facts` counts (fact, origin set) entries.
    The fixpoint ends when a round leaves the store unchanged; in 0.14.0 it
    compared the entry count, which missed origin replacements and could
-   fail open (advisory addendum).
+   fail open (advisory addendum). Evaluation is semi-naive: after its
+   first turn, a block only matches rule bodies that use an entry
+   inserted since its previous turn, which derives exactly what re-firing
+   every rule would (`fixpoint-matches-naive-oracle` checks this against
+   a naive fixpoint). Patterns are matched through an index by predicate
+   and length.
 3. **Checks.** `:one` (the default, check-if) passes on a match. `:reject`
    (reject-if) passes when there is no match. Rule bodies have no
    negation; negative constraints are expressed as reject checks and deny

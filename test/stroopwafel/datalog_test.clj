@@ -749,3 +749,73 @@
       (t/testing "6 blocks x 3 facts = 18 [:b] entries with distinct origins, plus 3 [:a]"
         (t/is (false? (:valid? result)))
         (t/is (= :max-facts (get-in result [:error :limit])))))))
+
+;; --- Differential test: the engine's fixpoint against a naive oracle ---
+;; The oracle is the plain definition: each round, every block (then the
+;; authorizer) fires every rule over every fact visible to it at the start of
+;; its turn, until a round changes nothing. The engine may evaluate smarter
+;; (semi-naive, indexed), but must reach exactly the same store.
+
+(defn- naive-fixpoint [indexed-rules store authorizer-scope]
+  (loop [store store]
+    (let [next (reduce
+                (fn [s [b rules]]
+                  (let [trusted (if (and (= b :authorizer) authorizer-scope)
+                                  authorizer-scope
+                                  (sut/trusted-origins b))
+                        visible (sut/facts-for-scope s trusted)]
+                    (reduce (fn [s rule]
+                              (reduce (fn [s {:keys [fact origin]}]
+                                        (sut/insert-fact s fact origin))
+                                      s (sut/fire-rule rule visible b)))
+                            s rules)))
+                store indexed-rules)]
+      (if (identical? next store) store (recur next)))))
+
+(defn- random-program
+  "A small random program over predicates :p :q (arity 2) and :r (arity 1),
+   constants 0..3, with 1-3 token blocks and an authorizer."
+  [^java.util.Random rnd]
+  (let [pick   (fn [xs] (nth xs (.nextInt rnd (count xs))))
+        const  #(.nextInt rnd 4)
+        vars   '[?a ?b ?c]
+        term   #(if (< (.nextInt rnd 10) 7) (pick vars) (const))
+        atom   #(if (zero? (.nextInt rnd 3))
+                  [:r (term)]
+                  [(pick [:p :q]) (term) (term)])
+        fact   #(if (zero? (.nextInt rnd 3))
+                  [:r (const)]
+                  [(pick [:p :q]) (const) (const)])
+        rule   (fn [i]
+                 (let [body  (vec (repeatedly (inc (.nextInt rnd 3)) atom))
+                       bound (vec (distinct (filter sut/variable? (apply concat body))))
+                       hterm #(if (and (seq bound) (< (.nextInt rnd 10) 8))
+                                (pick bound)
+                                (const))]
+                   {:id   (keyword (str "r" i))
+                    :head (if (zero? (.nextInt rnd 3))
+                            [:r (hterm)]
+                            [(pick [:p :q]) (hterm) (hterm)])
+                    :body body}))
+        section (fn [] {:facts (vec (repeatedly (.nextInt rnd 4) fact))
+                        :rules (mapv rule (range (.nextInt rnd 4)))})
+        nblocks (inc (.nextInt rnd 3))]
+    {:blocks     (vec (repeatedly nblocks section))
+     :authorizer (section)
+     :third-party (when (and (> nblocks 1) (zero? (.nextInt rnd 3)))
+                    (inc (.nextInt rnd (dec nblocks))))}))
+
+(t/deftest fixpoint-matches-naive-oracle
+  (let [rnd (java.util.Random. 42)]
+    (doseq [n (range 400)]
+      (let [{:keys [blocks authorizer third-party]} (random-program rnd)
+            store (reduce (fn [s [i {:keys [facts]}]] (sut/insert-facts s facts #{i}))
+                          (sut/insert-facts {} (:facts authorizer) #{:authorizer})
+                          (map-indexed vector blocks))
+            indexed (conj (vec (map-indexed (fn [i b] [i (:rules b)]) blocks))
+                          [:authorizer (:rules authorizer)])
+            scope   (when third-party #{0 :authorizer third-party})
+            limits  {:max-iterations 1000 :max-facts 100000}]
+        (t/is (= (naive-fixpoint indexed store scope)
+                 (:store (sut/fixpoint indexed store :authorizer-scope scope :limits limits)))
+              (str "program " n))))))
