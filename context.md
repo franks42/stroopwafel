@@ -1,6 +1,6 @@
 # Stroopwafel: context
 
-## What this is (0.16.0)
+## What this is (0.16.1)
 
 Stroopwafel is a pure Datalog engine for authorization decisions. Facts,
 rules, checks and policies go in; `{:valid? …}` comes out. It has no
@@ -159,6 +159,7 @@ code yet.
 | 0.14.2  | semi-naive fixpoint and predicate index (same results, ~50× faster); 116 tests                   |
 | 0.15.0  | no policies denies (with a warning; was allow); unknown option/authorizer keys throw; 118 tests  |
 | 0.16.0  | arity mismatch denies by default (`:arity-check :error`); graph keeps error details; 122 tests   |
+| 0.16.1  | arity check counts only keyword predicates (signer-led records were flagged); 123 tests          |
 
 ## Lineage
 
