@@ -59,7 +59,7 @@ The store now maps each fact to the **set of minimal origin sets** it was found 
 
 - A scope sees a fact if _any_ of its origin sets is visible to it.
 - A new derivation or statement adds its origin set unless the fact already holds a subset of it (which is at least as visible); kept supersets of the new set are dropped. Origins are never unioned across derivations or statements.
-- The fixpoint ends when a round adds no (fact, origin set) entry, not when the fact count stops changing.
+- The fixpoint ends when a round adds no (fact, origin set) entry, not when the fact count stops changing. (In 0.14.0 this compared the entry count, which was itself unsound — see the addendum below.)
 - `:max-facts` counts (fact, origin set) entries, so many appended blocks re-deriving the same facts cannot grow the store without bound; reaching it still denies.
 
 Both exploits are regression tests (`test/stroopwafel/core_test.clj`: `appended-rule-cannot-hide-a-revocation`, `appended-fact-cannot-hide-an-authorizer-fact`, `later-block-cannot-hide-a-block-0-derivation`), alongside unit tests of the store (`test/stroopwafel/datalog_test.clj`).
@@ -76,3 +76,57 @@ There is no complete workaround without upgrading. Partial mitigations:
 - `explain`'s fact table reports `:origins` (a set of origin sets) instead of `:origin`; derivations carry the `:origin` they produced; `graph` fact nodes have `:origins`.
 - Code that builds a fact store by hand must use the new shape, e.g. `{[:user "alice"] #{#{0}}}`, or `insert-fact` / `insert-facts`.
 - Decisions change only where a fact was previously hidden: some tokens that wrongly passed now deny, and some that wrongly denied (a block-0 fact hidden by a later block) now pass.
+
+## Addendum: the 0.14.0 fix ended the fixpoint too early
+
+- **Severity:** high — a revoked token can be made valid, under narrower conditions than above
+- **Affected:** 0.14.0 only (earlier releases never replaced an origin set; they had the worse bug above)
+- **Fixed in:** the next release (see `CHANGELOG.md`)
+- **Found by:** preparing semi-naive evaluation, which needed an exact termination condition
+
+### What went wrong
+
+The 0.14.0 store keeps only minimal origin sets, so a new derivation with a _smaller_ origin set replaces a kept superset. That makes the fact visible to more scopes, but leaves the number of (fact, origin set) entries unchanged. The fixpoint stopped when that number was unchanged, so a round whose only change was a replacement ended evaluation before the scopes that could newly see the fact derived from it.
+
+Within a round, blocks run in order and the authorizer runs last. When the authorizer's own derivation replaces an origin set like `#{1 :authorizer}` with `#{:authorizer}`, block 0 — which could not see the old set but can see the new one — has already run that round, and never runs again. Block 0's derivations are visible to the authorizer, so one feeding a reject check or deny policy is lost: a fail-open.
+
+### Exploit
+
+Block 0 defines revocation in terms of a list the authorizer derives in two steps. An appended block derives the list entry in one step, so the authorizer's later derivation is a replacement, not an addition:
+
+```clojure
+(def token {:blocks [{:facts [[:right "alice" :read] [:token-id "t1"]]
+                      :rules '[{:id :revoked :head [:revoked ?t]
+                                :body [[:token-id ?t] [:listed ?t]]}]}]})
+
+(def authz {:facts    [[:revocation-entry "t1"]]
+            :rules    '[{:id :pending :head [:pending ?t] :body [[:revocation-entry ?t]]}
+                        {:id :listed  :head [:listed ?t]  :body [[:pending ?t]]}]
+            :checks   '[{:id :not-revoked :kind :reject :query [[:revoked ?t]]}]
+            :policies '[{:kind :allow :query [[:right "alice" :read]]}]})
+
+(sw/evaluate token :authorizer authz)
+;; => {:valid? false}          ; revoked, correctly denied
+
+(def attacked
+  (update token :blocks conj
+          {:rules '[{:id :early :head [:listed ?t] :body [[:revocation-entry ?t]]}]}))
+
+(sw/evaluate attacked :authorizer authz)
+;; 0.14.0 => {:valid? true}
+;; Round 1: block 1 derives [:listed "t1"] #{1 :authorizer} (invisible to block 0);
+;;          the authorizer derives [:pending "t1"].
+;; Round 2: the authorizer derives [:listed "t1"] #{:authorizer}, replacing the
+;;          block-1 entry — count unchanged, so evaluation stops before block 0
+;;          derives [:revoked "t1"].
+```
+
+The same early stop also makes some valid tokens deny (a later block's check misses a fact it would have derived); that direction fails closed.
+
+### Fix
+
+The fixpoint now stops only when a round leaves the store unchanged (`insert-fact` returns the store itself when it changes nothing, so the test is `identical?`). Regression tests: `origin-replacement-does-not-end-the-fixpoint` and `scopes-derive-from-a-replaced-origin` in `test/stroopwafel/core_test.clj`.
+
+### Workaround for 0.14.0
+
+Don't let block 0's rules (or a trusted third-party block's) depend on facts the authorizer derives; state such facts in the authorizer, or check them in the authorizer's own reject check or deny policy.

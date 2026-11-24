@@ -57,6 +57,9 @@ input.
    in rule bodies, and every origin set kept (item 1), the order cannot
    change what any scope sees, only the round count and which derivation
    `:explain? true` keeps. `:max-facts` counts (fact, origin set) entries.
+   The fixpoint ends when a round leaves the store unchanged; in 0.14.0 it
+   compared the entry count, which missed origin replacements and could
+   fail open (advisory addendum).
 3. **Checks.** `:one` (the default, check-if) passes on a match. `:reject`
    (reject-if) passes when there is no match. Rule bodies have no
    negation; negative constraints are expressed as reject checks and deny
