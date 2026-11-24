@@ -2,6 +2,13 @@
   (:require [stroopwafel.datalog :as sut]
             [clojure.test :as t]))
 
+(def ^:private allow-all-policies
+  "Allow whatever passes the checks: the explicit form of what no policies
+   used to mean."
+  [{:kind :allow :query []}])
+
+(def ^:private allow-all {:policies allow-all-policies})
+
 (t/deftest variable?-test
   (t/is (true?  (sut/variable? '?u)))
   (t/is (false? (sut/variable? :read)))
@@ -94,7 +101,7 @@
                             :body [[:right ?u ?a ?r]]}]
                  :checks [{:id :c1
                            :query [[:can "alice" :read "file-1"]]}]}]}
-        result (sut/eval-token token :explain? true)]
+        result (sut/eval-token token :authorizer allow-all :explain? true)]
     (t/is (true? (:valid? result)))
     (t/is (some? (:explain result)))))
 
@@ -104,7 +111,7 @@
                  :rules  []
                  :checks [{:id :c1
                            :query [[:can "alice" :read "file-1"]]}]}]}
-        result (sut/eval-token token :explain? true)]
+        result (sut/eval-token token :authorizer allow-all :explain? true)]
     (t/is (false? (:valid? result)))
     (t/is (= [:deny :check-failed] ((juxt :result :reason) (:explain result))))
     (t/is (= :fail (get-in result [:explain :checks 0 :result])))))
@@ -126,7 +133,7 @@
                   {:facts  [[:role "alice" :admin]]
                    :rules  []
                    :checks []}]}
-          result (sut/eval-token token)]
+          result (sut/eval-token token :authorizer allow-all)]
       (t/is (false? (:valid? result))))))
 
 (t/deftest scoped-checks-test
@@ -142,7 +149,7 @@
                   {:facts  [[:secret "data"]]
                    :rules  []
                    :checks []}]}
-          result (sut/eval-token token)]
+          result (sut/eval-token token :authorizer allow-all)]
       (t/is (false? (:valid? result))))))
 
 (t/deftest authorizer-scope-test
@@ -156,8 +163,8 @@
                    :checks []}]}
           result (sut/eval-token token
                                  :authorizer
-                                 {:checks [{:id    :c1
-                                            :query [[:role "alice" :admin]]}]})]
+                                 {:policies allow-all-policies :checks [{:id    :c1
+                                                                         :query [[:role "alice" :admin]]}]})]
       (t/is (false? (:valid? result))))))
 
 (t/deftest execution-scope-test
@@ -173,7 +180,7 @@
                    :rules  []
                    :checks [{:id    :c1
                              :query [[:tag "block-1-data"]]}]}]}
-          result (sut/eval-token token)]
+          result (sut/eval-token token :authorizer allow-all)]
       (t/is (false? (:valid? result))))))
 
 (t/deftest derived-fact-origin-test
@@ -188,7 +195,7 @@
                               :head [:derived-fact ?u]
                               :body [[:user ?u]]}]
                    :checks []}]}
-          result (sut/eval-token token)]
+          result (sut/eval-token token :authorizer allow-all)]
       (t/is (false? (:valid? result))))))
 
 (t/deftest reject-if-test
@@ -213,7 +220,7 @@
                   {:facts  [[:admin "alice"]]
                    :rules  []
                    :checks []}]}
-          result (sut/eval-token token)]
+          result (sut/eval-token token :authorizer allow-all)]
       (t/is (false? (:valid? result))))))
 
 (t/deftest attenuation-chain-test
@@ -231,7 +238,7 @@
                    :rules  []
                    :checks [{:id    :c2
                              :query [[:right "alice" :read "file-1"]]}]}]}
-          result (sut/eval-token token)]
+          result (sut/eval-token token :authorizer allow-all)]
       (t/is (true? (:valid? result))))))
 
 ;;; ---- Expression evaluator tests ----
@@ -379,7 +386,7 @@
                    :rules  []
                    :checks [{:id    :c2
                              :query [[:tagged "alice"]]}]}]}
-          result (sut/eval-token token)]
+          result (sut/eval-token token :authorizer allow-all)]
       (t/is (false? (:valid? result))))))
 
 ;;; ---- Third-party block scope tests ----
@@ -396,8 +403,8 @@
           result (sut/eval-token token
                                  :trusted-block-indices #{1}
                                  :authorizer
-                                 {:checks [{:id    :c1
-                                            :query [[:role "alice" :verified]]}]})]
+                                 {:policies allow-all-policies :checks [{:id    :c1
+                                                                         :query [[:role "alice" :verified]]}]})]
       (t/is (true? (:valid? result))))))
 
 (t/deftest authorizer-rules-derive-from-trusted-third-party-facts
@@ -412,9 +419,9 @@
           result (sut/eval-token token
                                  :trusted-block-indices #{1}
                                  :authorizer
-                                 {:rules   '[{:id   :has-email
-                                              :head [:verified ?u]
-                                              :body [[:user ?u] [:email ?u ?e]]}]
+                                 {:policies allow-all-policies :rules   '[{:id   :has-email
+                                                                           :head [:verified ?u]
+                                                                           :body [[:user ?u] [:email ?u ?e]]}]
                                   :checks  [{:id    :c1
                                              :query [[:verified "alice"]]}]})]
       (t/is (true? (:valid? result))))))
@@ -448,7 +455,7 @@
                    :rules  []
                    :checks [{:id    :c1
                              :query [[:idp-verified "alice"]]}]}]}
-          result (sut/eval-token token
+          result (sut/eval-token token :authorizer allow-all
                                  :trusted-block-indices #{1})]
       (t/is (false? (:valid? result))))))
 
@@ -462,7 +469,7 @@
                    :rules  []
                    :checks [{:id    :tp-check
                              :query [[:user "alice"]]}]}]}
-          result (sut/eval-token token
+          result (sut/eval-token token :authorizer allow-all
                                  :trusted-block-indices #{1})]
       (t/is (true? (:valid? result))))))
 
@@ -477,8 +484,8 @@
                    :checks []}]}
           result (sut/eval-token token
                                  :authorizer
-                                 {:checks [{:id    :c1
-                                            :query [[:role "alice" :admin]]}]})]
+                                 {:policies allow-all-policies :checks [{:id    :c1
+                                                                         :query [[:role "alice" :admin]]}]})]
       (t/is (false? (:valid? result))))))
 
 ;; --- Fixpoint safety: circular rules, explosion, termination ---
@@ -562,7 +569,7 @@
 
 (t/deftest reject-check-fails-closed-at-fact-limit
   (let [result (sut/eval-token
-                (chain-token 50 [{:id :no-far :kind :reject :query [[:reach 0 50]]}]))]
+                (chain-token 50 [{:id :no-far :kind :reject :query [[:reach 0 50]]}]) :authorizer allow-all)]
     (t/is (false? (:valid? result)))
     (t/is (= :max-facts (-> result :error :limit)))))
 
@@ -608,9 +615,9 @@
                              :limits {:max-facts 20 :max-iterations 6}))))
   (t/testing "limits must be positive integers"
     (t/is (thrown-with-msg? clojure.lang.ExceptionInfo #"limits"
-                            (sut/eval-token (chain-token 5 []) :limits {:max-facts 0})))
+                            (sut/eval-token (chain-token 5 []) :authorizer allow-all :limits {:max-facts 0})))
     (t/is (thrown-with-msg? clojure.lang.ExceptionInfo #"limits"
-                            (sut/eval-token (chain-token 5 []) :limits {:max-fact 10})))))
+                            (sut/eval-token (chain-token 5 []) :authorizer allow-all :limits {:max-fact 10})))))
 
 (t/deftest self-referential-rule-terminates
   (t/testing "Rule that derives its own input terminates after one round"
@@ -745,7 +752,7 @@
     (let [base   {:facts [[:a 1] [:a 2] [:a 3]]}
           copier (fn [_] {:rules '[{:id :copy :head [:b ?x] :body [[:a ?x]]}]})
           token  {:blocks (into [base] (map copier) (range 6))}
-          result (sut/eval-token token :limits {:max-facts 15})]
+          result (sut/eval-token token :authorizer allow-all :limits {:max-facts 15})]
       (t/testing "6 blocks x 3 facts = 18 [:b] entries with distinct origins, plus 3 [:a]"
         (t/is (false? (:valid? result)))
         (t/is (= :max-facts (get-in result [:error :limit])))))))
@@ -819,3 +826,24 @@
         (t/is (= (naive-fixpoint indexed store scope)
                  (:store (sut/fixpoint indexed store :authorizer-scope scope :limits limits)))
               (str "program " n))))))
+
+(t/deftest eval-token-no-policies-and-unknown-keys
+  (let [token {:blocks [{:facts [[:x]]}]}
+        err   (fn [f] (try (f) nil
+                           (catch clojure.lang.ExceptionInfo e
+                             (:stroopwafel/error (ex-data e)))))]
+    (t/testing "no policies denies with a warning"
+      (t/is (= {:valid? false :warnings [{:type :no-policies}]} (sut/eval-token token)))
+      (t/is (= {:valid? false :warnings [{:type :no-policies}]}
+               (sut/eval-token token :authorizer {:rules []})))
+      (t/is (= {:result :deny} (sut/eval-policies [] {} #{0}))))
+    (t/testing "warnings combine: arity mismatches, then no policies"
+      (t/is (= [:arity-mismatch :no-policies]
+               (map :type (:warnings (sut/eval-token {:blocks [{:facts [[:a 1] [:a 1 2]]}]}))))))
+    (t/testing "the no-policies warning survives an :arity-check :error deny"
+      (t/is (= [{:type :no-policies}]
+               (:warnings (sut/eval-token {:blocks [{:facts [[:a 1] [:a 1 2]]}]}
+                                          :arity-check :error)))))
+    (t/testing "unknown keys still throw: a malformed call, not a policy state"
+      (t/is (= :unknown-keys (err #(sut/eval-token token :authorizer allow-all :limit {}))))
+      (t/is (= :unknown-keys (err #(sut/eval-token token :authorizer (assoc allow-all :policy []))))))))

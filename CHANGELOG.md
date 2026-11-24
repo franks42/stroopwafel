@@ -3,6 +3,27 @@
 All notable changes to stroopwafel. Each entry reflects committed work.
 History before 0.13.0 is in `context.md` (## History).
 
+## Unreleased
+
+### Breaking
+
+- **No policies denies** instead of allowing, with `:reason
+  :no-policies` in the explain and a `{:type :no-policies}` warning in the
+  result. It was the one fail-open default left: a forgotten authorizer
+  allowed any token whose checks passed (a token without checks always).
+  The decision stays binary — only a matching `:allow` allows — and the
+  reason tells callers what happened; one that treats a missing policy set
+  as an error can throw on the warning (README). To let checks alone
+  decide, add `{:kind :allow :query []}`, which matches unconditionally.
+- **Unknown keys throw** (`:stroopwafel/error :unknown-keys`, with
+  `:unknown` and `:allowed`): options to `evaluate` and `eval-token`, and
+  `:authorizer` keys. `:authoriser` used to drop the authorizer silently —
+  with a deny policy in it, the token passed; `:check` dropped checks.
+- **Explain:** `:reason :no-policies` is now a deny. The explicit
+  allow-all policy shows as a matched policy with an empty `:because`.
+- The rule behind both: the decision depends only on the data (token and
+  policies); only a malformed call throws.
+
 ## 0.14.2 — 2026-11-23
 
 ### Performance

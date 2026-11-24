@@ -68,8 +68,25 @@ Like a stroopwafel: two layers with something sealed between them.
   match (reject-if).
 - **Policies** belong to the authorizer and run in order once all checks
   pass. The first match wins, whether `:allow` or `:deny`. If no policy
-  matches, the result is deny (closed world). If there are no policies at
-  all, the result is allow.
+  matches, the result is deny (closed world), and so it is with no
+  policies at all: only a matching `:allow` allows. The decision is always
+  allow or deny, never a third outcome for the caller to interpret; the
+  explain's `:reason` says why (`:no-matching-policy`, `:no-policies`, …),
+  and no policies also adds a `{:type :no-policies}` warning. To let the
+  checks alone decide, say so with `{:kind :allow :query []}`, which
+  matches unconditionally. A caller that treats a missing policy set as
+  an error can throw on the warning:
+
+  ```clojure
+  (let [result (sw/evaluate token :authorizer authz)]
+    (when (some #(= :no-policies (:type %)) (:warnings result))
+      (throw (ex-info "No policies" {:authorizer authz})))
+    result)
+  ```
+
+  Only a malformed call throws: unknown options or authorizer keys
+  (`:stroopwafel/error :unknown-keys`, so a typo like `:authoriser` can't
+  silently drop the policies), and invalid `:limits` or `:arity-check`.
 - **Scopes.** Every fact carries its set of origins: a block index or
   `:authorizer`. Block 0 is the authority. Block N's rules and checks see
   `#{0 N :authorizer}`. The authorizer sees `#{0 :authorizer}`. A later
@@ -87,8 +104,9 @@ Like a stroopwafel: two layers with something sealed between them.
   of about 35 functions: comparison, arithmetic, `str/…`, collections,
   type predicates, regex. There is no `eval` and no namespace lookup.
 - **Explain.** `:explain? true` returns the whole decision: its
-  `:result` and `:reason` (`:policy`, `:check-failed`, `:no-policies`,
-  `:no-matching-policy`, `:limit-exceeded`), every check with its block
+  `:result` and `:reason` (`:policy`, `:check-failed`,
+  `:no-matching-policy`, `:no-policies`, `:limit-exceeded`,
+  `:arity-mismatch`), every check with its block
   and result, every policy evaluated up to the deciding one, and one
   `:facts` table. A check's or policy's `:because` lists the facts it
   matched; `:facts` says for each fact which block stated it and which

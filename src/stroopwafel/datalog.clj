@@ -795,14 +795,20 @@
   "The authorization decision from check results and evaluated policy
    entries: `{:result :allow|:deny :reason … :decider entry}`.
 
-   Reasons: `:check-failed`, `:no-policies` (allow: checks alone decide),
-   `:policy` (the first matching policy's kind), `:no-matching-policy`
-   (deny: closed world)."
+   The result is binary and closed-world: only a matching `:allow` policy
+   allows. When no policy applies — none matches (XACML's NotApplicable),
+   or there are none at all — the result is deny, and `:reason` says which.
+   The engine never hands the caller a third outcome to interpret.
+
+   Reasons: `:check-failed`, `:policy` (the first matching policy's kind),
+   `:no-matching-policy` (deny), `:no-policies` (deny: nothing can allow).
+   Callers that treat a missing policy set as an error can check for
+   `:no-policies` (also in `eval-token`'s `:warnings`) and throw."
   [check-results policies evaluated]
   (let [decider (some #(when (= :matched (:result %)) %) evaluated)]
     (cond
       (some #(= :fail (:result %)) check-results) {:result :deny :reason :check-failed}
-      (empty? policies)                           {:result :allow :reason :no-policies}
+      (empty? policies)                           {:result :deny :reason :no-policies}
       decider                                     {:result  (:kind decider)
                                                    :reason  :policy
                                                    :decider decider}
@@ -814,12 +820,11 @@
    - `:allow` match → `{:result :allow}`
    - `:deny` match → `{:result :deny}`
    - No match → `{:result :deny}` (closed-world default)
-   - No policies → `{:result :allow}`
+   - No policies → `{:result :deny}` (nothing can allow)
 
    Policies are only evaluated after all block checks pass."
   [policies fact-store scope]
-  {:result (:result (decide [] policies
-                            (run-policies policies fact-store scope false nil)))})
+  {:result (:result (decide [] policies (run-policies policies fact-store scope false nil)))})
 
 (defn eval-checks
   "Evaluates all checks on the fact store with optional scope filtering.
@@ -980,6 +985,21 @@
          (mapv (fn [[p arities]]
                  {:predicate p :arities (into (sorted-map) arities)})))))
 
+(defn check-keys
+  "Throws `:stroopwafel/error :unknown-keys` when map `m` (named `what` in
+   the message) has keys outside `allowed`: a misspelled option or
+   authorizer key would otherwise be silently ignored — `:authoriser`
+   dropped every deny policy."
+  [what m allowed]
+  (let [unknown (vec (remove allowed (keys m)))]
+    (when (seq unknown)
+      (throw (ex-info (str "Unknown " what ": " (pr-str unknown)
+                           "; expected some of " (pr-str (sort allowed)))
+                      {:stroopwafel/error :unknown-keys
+                       :in                what
+                       :unknown           unknown
+                       :allowed           allowed})))))
+
 (defn eval-token
   "Evaluates an authorization token with per-block scope isolation.
 
@@ -993,10 +1013,15 @@
      - Block N checks: scope #{0 N :authorizer}
      - Authorizer checks: scope #{0 :authorizer}
 
-   Accepts optional `:authorizer` map with:
+   Accepts an `:authorizer` map with:
+     - `:policies` — ordered allow/deny policies. With none (or no
+       authorizer) nothing can allow: the result is deny, with `:reason
+       :no-policies` and a `{:type :no-policies}` warning
      - `:facts`  — additional authorizer facts
      - `:checks` — additional authorizer checks
      - `:rules`  — additional authorizer rules
+
+   Unknown options or authorizer keys throw (see `check-keys`).
 
    Accepts optional `:limits` (`:max-iterations`, `:max-facts`,
    `:max-derivations`) over `default-limits`. Reaching `:max-iterations` or
@@ -1017,11 +1042,12 @@
    :checks [...] :policies [...] :facts {...}}`: every check with its
    `:block`, every evaluated policy (up to the deciding one) with its
    `:index`, and one fact table for all of them. `:reason` is
-   `:check-failed`, `:no-policies`, `:policy`, `:no-matching-policy`
+   `:check-failed`, `:policy`, `:no-matching-policy`, `:no-policies`
    or `:limit-exceeded` (then with `:error` instead of checks).
    | `:error`   | when a limit was reached: `{:type :limit-exceeded :limit :max :facts :iterations}`,
    |            | or with `:arity-check :error`: `{:type :arity-mismatch :mismatches [...]}`
-   | `:warnings`| with `:arity-check :warn` (the default), when patterns disagree on length
+   | `:warnings`| `{:type :arity-mismatch …}` with `:arity-check :warn` (the default), when
+   |            | patterns disagree on length; `{:type :no-policies}` when there are no policies
 
    `:arity-check` (`:warn` default, `:error`, `:off`) checks that every use of a
    predicate — facts, rule heads and bodies, checks, policies — has the same
@@ -1031,18 +1057,28 @@
   [token & {:keys [explain? authorizer arity-check]
             :or   {arity-check :warn}
             :as   opts}]
+  (check-keys "eval-token options" opts
+              #{:explain? :authorizer :trusted-block-indices :limits :arity-check})
+  (check-keys "authorizer keys" authorizer #{:facts :rules :checks :policies})
   (when-not (#{:warn :error :off} arity-check)
     (throw (ex-info "Invalid :arity-check: must be :warn, :error or :off"
                     {:arity-check arity-check})))
-  (let [mismatches (when-not (= :off arity-check)
-                     (arity-mismatches (:blocks token) authorizer))]
+  (let [mismatches  (when-not (= :off arity-check)
+                      (arity-mismatches (:blocks token) authorizer))
+        no-policies (when (empty? (:policies authorizer))
+                      [{:type :no-policies}])
+        with-warnings (fn [result warnings]
+                        (cond-> result
+                          (seq warnings) (assoc :warnings (vec warnings))))]
     (if (and (seq mismatches) (= :error arity-check))
       (let [error {:type :arity-mismatch :mismatches mismatches}]
-        (cond-> {:valid? false :error error}
-          explain? (assoc :explain {:type   :decision
-                                    :result :deny
-                                    :reason :arity-mismatch
-                                    :error  error})))
-      (cond-> (apply eval-token* token (mapcat identity (dissoc opts :arity-check)))
-        (seq mismatches)
-        (assoc :warnings (mapv #(assoc % :type :arity-mismatch) mismatches))))))
+        (with-warnings
+          (cond-> {:valid? false :error error}
+            explain? (assoc :explain {:type   :decision
+                                      :result :deny
+                                      :reason :arity-mismatch
+                                      :error  error}))
+          no-policies))
+      (with-warnings
+        (apply eval-token* token (mapcat identity (dissoc opts :arity-check)))
+        (concat (map #(assoc % :type :arity-mismatch) mismatches) no-policies)))))

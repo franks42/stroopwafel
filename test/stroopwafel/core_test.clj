@@ -2,6 +2,13 @@
   (:require [stroopwafel.core :as sut]
             [clojure.test :as t]))
 
+(def ^:private allow-all-policies
+  "Allow whatever passes the checks: the explicit form of what no policies
+   used to mean."
+  [{:kind :allow :query []}])
+
+(def ^:private allow-all {:policies allow-all-policies})
+
 (t/deftest end-to-end-with-authorizer
   (t/testing "Full round-trip: issue -> attenuate -> evaluate with authorizer"
     (let [;; Authority block with rights
@@ -21,7 +28,7 @@
           result (sut/evaluate token
                                :explain? true
                                :authorizer
-                               {:facts  [[:time 1000]]
+                               {:policies allow-all-policies :facts  [[:time 1000]]
                                 :checks [{:id    :check-read
                                           :query [[:can "alice" :read "file-1"]]}]})]
       (t/is (true? (:valid? result)))
@@ -37,8 +44,8 @@
 
             result (sut/evaluate token-with-admin
                                  :authorizer
-                                 {:checks [{:id    :needs-admin
-                                            :query [[:admin "alice"]]}]})]
+                                 {:policies allow-all-policies :checks [{:id    :needs-admin
+                                                                         :query [[:admin "alice"]]}]})]
         (t/is (false? (:valid? result)))))))
 
 (t/deftest authorizer-allow-policy
@@ -125,15 +132,59 @@
                                             :query [[:role "alice" :admin]]}]})]
       (t/is (false? (:valid? result))))))
 
-(t/deftest evaluate-without-authorizer
-  (t/testing "Existing calls without :authorizer still work"
-    (let [token {:blocks [{:facts  [[:user "alice"]]
-                           :rules  []
-                           :checks [{:id :c1
-                                     :query [[:user "alice"]]}]}]}
-          result (sut/evaluate token :explain? true)]
-      (t/is (true? (:valid? result)))
-      (t/is (some? (:explain result))))))
+(defn- config-error
+  "The `:stroopwafel/error` of the ex-info `f` throws, or nil."
+  [f]
+  (try (f) nil
+       (catch clojure.lang.ExceptionInfo e (:stroopwafel/error (ex-data e)))))
+
+(t/deftest no-policies-denies
+  (let [token  {:blocks [{:facts  [[:user "alice"]]
+                          :checks [{:id :c1 :query [[:user "alice"]]}]}]}
+        denied {:valid? false :warnings [{:type :no-policies}]}]
+    (t/testing "nothing can allow: deny, with a warning the caller can act on"
+      (t/is (= denied (sut/evaluate token)))
+      (t/is (= denied (sut/evaluate token :authorizer {:policies []})))
+      (t/is (= denied (sut/evaluate token :authorizer {:policies nil})))
+      (t/is (= denied (sut/evaluate token :authorizer {:facts [[:x]]}))))
+    (t/testing "the explain gives the reason"
+      (let [result (sut/evaluate token :explain? true)]
+        (t/is (= {:result :deny :reason :no-policies :policies []}
+                 (select-keys (:explain result) [:result :reason :policies])))
+        (t/is (= [{:type :no-policies}] (:warnings result)))))
+    (t/testing "a failed check is the more specific reason"
+      (t/is (= :check-failed
+               (get-in (sut/evaluate {:blocks [{:checks [{:id :c :query [[:nope]]}]}]}
+                                     :explain? true)
+                       [:explain :reason]))))
+    (t/testing "a caller that treats no policies as an error can throw on the warning"
+      (let [strict (fn [& args]
+                     (let [r (apply sut/evaluate args)]
+                       (when (some #(= :no-policies (:type %)) (:warnings r))
+                         (throw (ex-info "No policies" {:stroopwafel/error :no-policies})))
+                       r))]
+        (t/is (thrown-with-msg? clojure.lang.ExceptionInfo #"No policies" (strict token)))
+        (t/is (true? (:valid? (strict token :authorizer allow-all))))))
+    (t/testing "an explicit allow-all policy lets the checks alone decide"
+      (t/is (= {:valid? true} (sut/evaluate token :authorizer allow-all)))
+      (t/is (false? (:valid? (sut/evaluate {:blocks [{:checks [{:id :c :query [[:nope]]}]}]}
+                                           :authorizer allow-all)))))))
+
+(t/deftest unknown-keys-throw
+  (let [token {:blocks [{:facts [[:x]]}]}
+        deny  {:policies [{:kind :deny :query [[:x]]}]}]
+    (t/testing "a misspelled option no longer drops the authorizer and its deny policy"
+      (t/is (= :unknown-keys
+               (config-error #(sut/evaluate token :authoriser deny :authorizer allow-all))))
+      (t/is (false? (:valid? (sut/evaluate token :authorizer deny)))))
+    (t/testing "a misspelled authorizer key no longer drops its checks"
+      (t/is (= :unknown-keys
+               (config-error #(sut/evaluate token :authorizer
+                                            (assoc allow-all :check [{:id :c :query [[:y]]}]))))))
+    (t/testing "the error names the unknown keys"
+      (t/is (= [:explain]
+               (try (sut/evaluate token :authorizer allow-all :explain true)
+                    (catch clojure.lang.ExceptionInfo e (:unknown (ex-data e)))))))))
 
 (t/deftest multiple-blocks-scope-isolation
   (t/testing "Attenuate uses token's proof - multiple blocks with scope isolation"
@@ -147,7 +198,7 @@
                            :rules []
                            :checks [{:id :c2 :query [[:user "alice"]]}]}]}]
       (t/is (= 3 (count (:blocks token))))
-      (t/is (true? (:valid? (sut/evaluate token)))))))
+      (t/is (true? (:valid? (sut/evaluate token :authorizer allow-all)))))))
 
 ;;; ---- Datalog expressions end-to-end tests ----
 
@@ -182,10 +233,10 @@
                                       :when  [(<= ?a 10000)]}]}]}
           result-ok (sut/evaluate token
                                   :authorizer
-                                  {:facts [[:transfer-amount 5000]]})
+                                  {:policies allow-all-policies :facts [[:transfer-amount 5000]]})
           result-fail (sut/evaluate token
                                     :authorizer
-                                    {:facts [[:transfer-amount 50000]]})]
+                                    {:policies allow-all-policies :facts [[:transfer-amount 50000]]})]
       (t/is (true? (:valid? result-ok)))
       (t/is (false? (:valid? result-fail))))))
 
@@ -198,10 +249,10 @@
                                       :when  [(str/starts-with? ?r "/public/")]}]}]}
           result-ok (sut/evaluate token
                                   :authorizer
-                                  {:facts [[:resource "/public/docs"]]})
+                                  {:policies allow-all-policies :facts [[:resource "/public/docs"]]})
           result-fail (sut/evaluate token
                                     :authorizer
-                                    {:facts [[:resource "/private/secrets"]]})]
+                                    {:policies allow-all-policies :facts [[:resource "/private/secrets"]]})]
       (t/is (true? (:valid? result-ok)))
       (t/is (false? (:valid? result-fail))))))
 
@@ -246,7 +297,7 @@
       ;; Evaluate with trusted key
       (let [result (sut/evaluate token
                                  :authorizer
-                                 {:trusted-external-keys [idp-key]
+                                 {:policies allow-all-policies :trusted-external-keys [idp-key]
                                   :checks [{:id    :has-email
                                             :query [[:email "alice" "alice@idp.com"]]}]})]
         (t/is (true? (:valid? result))))
@@ -254,8 +305,8 @@
       ;; Without trusting the key, authorizer can't see third-party facts
       (let [result (sut/evaluate token
                                  :authorizer
-                                 {:checks [{:id    :has-email
-                                            :query [[:email "alice" "alice@idp.com"]]}]})]
+                                 {:policies allow-all-policies :checks [{:id    :has-email
+                                                                         :query [[:email "alice" "alice@idp.com"]]}]})]
         (t/is (false? (:valid? result)))))))
 
 (t/deftest third-party-untrusted-key-rejected
@@ -274,7 +325,7 @@
           ;; Trust a different key - third-party facts not visible
           result (sut/evaluate token
                                :authorizer
-                               {:trusted-external-keys [other-key]
+                               {:policies allow-all-policies :trusted-external-keys [other-key]
                                 :checks [{:id    :has-verified
                                           :query [[:verified "alice"]]}]})]
       (t/is (false? (:valid? result))))))
@@ -303,7 +354,7 @@
       (t/is (= 4 (count (:blocks token))))
       (t/is (true? (:valid? (sut/evaluate token
                                           :authorizer
-                                          {:trusted-external-keys [idp-key]
+                                          {:policies allow-all-policies :trusted-external-keys [idp-key]
                                            :checks [{:id    :has-idp
                                                      :query [[:idp-verified "alice"]]}]})))))))
 
@@ -326,7 +377,7 @@
 
           result (sut/evaluate token
                                :authorizer
-                               {:trusted-external-keys [idp-key-a idp-key-b]
+                               {:policies allow-all-policies :trusted-external-keys [idp-key-a idp-key-b]
                                 :checks [{:id    :has-both
                                           :query [[:email "alice" "a@idp-a.com"]
                                                   [:phone "alice" "+1234"]]}]})]
@@ -367,7 +418,7 @@
   (t/is (= {:valid?  true
             :explain {:type     :decision
                       :result   :allow
-                      :reason   :no-policies
+                      :reason   :policy
                       :checks   [{:type     :check
                                   :check-id :alice-can-read
                                   :block    1
@@ -376,7 +427,12 @@
                                   :matches  [{:env    {}
                                               :origin #{0 1}
                                               :facts  [[:can "alice" :read "file-1"]]}]}]
-                      :policies []
+                      :policies [{:kind    :allow
+                                  :query   []
+                                  :index   0
+                                  :result  :matched
+                                  :because []
+                                  :matches [{:env {} :origin #{} :facts []}]}]
                       :facts    {[:can "alice" :read "file-1"]
                                  {:origins     #{#{0 1}}
                                   :derivations [{:rule   :can-from-right
@@ -386,23 +442,25 @@
                                                  :proof  [[:right "alice" :read "file-1"]]}]}
                                  [:right "alice" :read "file-1"]
                                  {:origins #{#{0}} :stated? true}}}}
-           (sut/evaluate delegation-token :explain? true))))
+           (sut/evaluate delegation-token :authorizer allow-all :explain? true))))
 
 (t/deftest graph-renders-evaluate-output
-  (let [graph (sut/graph (:explain (sut/evaluate delegation-token :explain? true)))]
-    (t/is (= {:n1 {:id :n1 :kind :decision :result :allow :reason :no-policies}
+  (let [graph (sut/graph (:explain (sut/evaluate delegation-token :authorizer allow-all :explain? true)))]
+    (t/is (= {:n1 {:id :n1 :kind :decision :result :allow :reason :policy}
               :n2 {:id :n2 :kind :check :check-id :alice-can-read :block 1 :result :pass}
               :n3 {:id :n3 :kind :fact :fact [:can "alice" :read "file-1"]
                    :origins #{#{0 1}} :stated? false}
               :n4 {:id :n4 :kind :derivation :rule :can-from-right :block 1
                    :origin #{0 1} :env '{?u "alice" ?a :read ?r "file-1"}}
               :n5 {:id :n5 :kind :fact :fact [:right "alice" :read "file-1"]
-                   :origins #{#{0}} :stated? true}}
+                   :origins #{#{0}} :stated? true}
+              :n6 {:id :n6 :kind :policy :index 0 :effect :allow :result :matched}}
              (:nodes graph)))
     (t/is (= [{:from :n1 :to :n2 :label :check}
               {:from :n2 :to :n3 :label :because}
               {:from :n3 :to :n4 :label :derived-by}
-              {:from :n4 :to :n5 :label :uses}]
+              {:from :n4 :to :n5 :label :uses}
+              {:from :n1 :to :n6 :label :policy}]
              (:edges graph)))
     (t/is (= :n1 (:root graph)))))
 
@@ -412,7 +470,7 @@
                           :checks [{:id    :join
                                     :query '[[:user ?u] [:right ?u :read]]}]}]}]
     (t/is (= [[:user "alice"] [:right "alice" :read]]
-             (get-in (sut/evaluate token :explain? true) [:explain :checks 0 :because])))))
+             (get-in (sut/evaluate token :authorizer allow-all :explain? true) [:explain :checks 0 :because])))))
 
 (t/deftest graph-shares-repeated-facts
   (t/testing "a fact reached along two proof paths is one node"
@@ -424,7 +482,7 @@
                                      :head '[:two ?a ?c]
                                      :body '[[:path ?a ?b] [:path ?b ?c] [:path ?a ?c]]}]
                            :checks [{:id :c :query '[[:two 1 3] [:edge 1 3]]}]}]}
-          graph (sut/graph (:explain (sut/evaluate token :explain? true)))
+          graph (sut/graph (:explain (sut/evaluate token :authorizer allow-all :explain? true)))
           facts (map :fact (nodes-of-kind graph :fact))]
       (t/is (= (count facts) (count (set facts))))
       (t/is (= 1 (count (filter #{[:edge 1 3]} facts)))))))
@@ -434,7 +492,7 @@
                           :rules  []
                           :checks [{:id :no-admin :kind :reject
                                     :query '[[:admin ?u]]}]}]}
-        result (sut/evaluate token :explain? true)
+        result (sut/evaluate token :authorizer allow-all :explain? true)
         graph  (sut/graph (:explain result))]
     (t/is (false? (:valid? result)))
     (t/is (= [[:admin "mallory"]] (get-in result [:explain :checks 0 :because])))
@@ -449,9 +507,12 @@
                          :rules  []
                          :checks [{:id :no-admin :kind :reject
                                    :query '[[:admin ?u]]}]}]}
-        graph (sut/graph (:explain (sut/evaluate token :explain? true)))]
-    (t/is (= #{:decision :check} (set (map :kind (vals (:nodes graph))))))
-    (t/is (= [{:from :n1 :to :n2 :label :check}] (:edges graph)))))
+        graph (sut/graph (:explain (sut/evaluate token :authorizer allow-all :explain? true)))]
+    (t/is (= #{:decision :check :policy} (set (map :kind (vals (:nodes graph))))))
+    (t/is (= [{:from :n1 :to :n2 :label :check}
+              {:from :n1 :to :n3 :label :policy}]
+             (:edges graph))
+          "the allow-all policy matches without facts: no :because edges")))
 
 ;; --- :explain? :all — every reason -----------------------------------------
 
@@ -469,7 +530,7 @@
 
 (t/deftest explain-all-shows-every-derivation
   (let [rules-of (fn [mode]
-                   (->> (sut/evaluate two-route-token :explain? mode)
+                   (->> (sut/evaluate two-route-token :authorizer allow-all :explain? mode)
                         :explain :facts
                         (#(get % [:can "alice" :read]))
                         :derivations
@@ -478,7 +539,7 @@
     (t/is (= [:direct :via-group] (rules-of :all)))))
 
 (t/deftest graph-keeps-each-derivation-separate
-  (let [graph   (sut/graph (:explain (sut/evaluate two-route-token :explain? :all)))
+  (let [graph   (sut/graph (:explain (sut/evaluate two-route-token :authorizer allow-all :explain? :all)))
         derivs  (nodes-of-kind graph :derivation)
         uses-of (fn [d] (->> (:edges graph)
                              (filter #(and (= (:id d) (:from %)) (= :uses (:label %))))
@@ -499,7 +560,7 @@
              :checks [{:id :c :query '[[:path 1 2]]}]}]})
 
 (t/deftest explain-all-includes-circular-reasons
-  (let [facts (get-in (sut/evaluate cyclic-token :explain? :all) [:explain :facts])]
+  (let [facts (get-in (sut/evaluate cyclic-token :authorizer allow-all :explain? :all) [:explain :facts])]
     (t/testing "[:path 1 2] is derived directly and via [:path 1 1]"
       (t/is (= #{[[:edge 1 2]] [[:path 1 1] [:edge 1 2]]}
                (set (map :proof (get-in facts [[:path 1 2] :derivations]))))))
@@ -508,7 +569,7 @@
                   (map :proof (get-in facts [[:path 1 1] :derivations])))))))
 
 (t/deftest graph-draws-cycles-as-edges-back
-  (let [graph    (sut/graph (:explain (sut/evaluate cyclic-token :explain? :all)))
+  (let [graph    (sut/graph (:explain (sut/evaluate cyclic-token :authorizer allow-all :explain? :all)))
         id-of    (into {} (map (juxt :fact :id)) (nodes-of-kind graph :fact))
         path-1-2 (id-of [:path 1 2])]
     (t/is (= (count (nodes-of-kind graph :fact))
@@ -516,14 +577,14 @@
     (t/testing "some derivation :uses the node it ultimately explains"
       (t/is (some #(and (= :uses (:label %)) (= path-1-2 (:to %)))
                   (:edges graph))))
-    (t/is (= graph (sut/graph (:explain (sut/evaluate cyclic-token :explain? :all))))
+    (t/is (= graph (sut/graph (:explain (sut/evaluate cyclic-token :authorizer allow-all :explain? :all))))
           "node ids are deterministic")))
 
 (t/deftest explain-all-because-covers-every-match
   (let [token {:blocks [{:facts  [[:right "alice" :read] [:right "bob" :read]]
                          :rules  []
                          :checks [{:id :c :query '[[:right ?u :read]]}]}]}
-        because (fn [mode] (set (get-in (sut/evaluate token :explain? mode)
+        because (fn [mode] (set (get-in (sut/evaluate token :authorizer allow-all :explain? mode)
                                         [:explain :checks 0 :because])))]
     (t/is (= 1 (count (because true))))
     (t/is (= #{[:right "alice" :read] [:right "bob" :read]} (because :all)))))
@@ -534,8 +595,8 @@
         token  {:blocks [{:facts  (vec edges)
                           :rules  (:rules (first (:blocks cyclic-token)))
                           :checks [{:id :c :query '[[:path 0 1]]}]}]}
-        capped (sut/evaluate token :explain? :all :limits {:max-derivations 20})
-        full   (sut/evaluate token :explain? :all)]
+        capped (sut/evaluate token :authorizer allow-all :explain? :all :limits {:max-derivations 20})
+        full   (sut/evaluate token :authorizer allow-all :explain? :all)]
     (t/is (true? (:valid? capped)) "the cap never changes the decision")
     (t/is (true? (get-in capped [:explain :truncated?])))
     (t/is (nil? (get-in full [:explain :truncated?])))))
@@ -619,7 +680,7 @@
                           :rules '[{:id :r :head [:reach ?a ?b] :body [[:edge ?a ?b]]}
                                    {:id :t :head [:reach ?a ?c]
                                     :body [[:reach ?a ?b] [:edge ?b ?c]]}]}]}
-        result (sut/evaluate token :explain? true :limits {:max-facts 5})
+        result (sut/evaluate token :authorizer allow-all :explain? true :limits {:max-facts 5})
         graph  (sut/graph (:explain result))]
     (t/is (= {:type   :decision
               :result :deny
@@ -733,13 +794,13 @@
                                           :checks [{:id :any :query '[[?p 1]]}]}]}))))
 
 (t/deftest evaluate-warns-on-arity-mismatch-by-default
-  (let [result (sut/evaluate typo-token)]
+  (let [result (sut/evaluate typo-token :authorizer allow-all)]
     (t/is (true? (:valid? result)) "the decision is unchanged")
     (t/is (= [(assoc typo-mismatch :type :arity-mismatch)] (:warnings result))))
-  (t/is (= {:valid? true} (sut/evaluate delegation-token)) "no :warnings key when clean"))
+  (t/is (= {:valid? true} (sut/evaluate delegation-token :authorizer allow-all)) "no :warnings key when clean"))
 
 (t/deftest evaluate-can-deny-on-arity-mismatch
-  (let [result (sut/evaluate typo-token :arity-check :error :explain? true)]
+  (let [result (sut/evaluate typo-token :authorizer allow-all :arity-check :error :explain? true)]
     (t/is (= {:valid? false
               :error  {:type :arity-mismatch :mismatches [typo-mismatch]}
               :explain {:type   :decision
@@ -747,14 +808,14 @@
                         :reason :arity-mismatch
                         :error  {:type :arity-mismatch :mismatches [typo-mismatch]}}}
              result)))
-  (t/is (= {:valid? true} (sut/evaluate delegation-token :arity-check :error))))
+  (t/is (= {:valid? true} (sut/evaluate delegation-token :authorizer allow-all :arity-check :error))))
 
 (t/deftest evaluate-arity-check-off
-  (t/is (= {:valid? true} (sut/evaluate typo-token :arity-check :off))))
+  (t/is (= {:valid? true} (sut/evaluate typo-token :authorizer allow-all :arity-check :off))))
 
 (t/deftest evaluate-rejects-unknown-arity-check-mode
   (t/is (thrown-with-msg? clojure.lang.ExceptionInfo #"arity-check"
-                          (sut/evaluate typo-token :arity-check :loud))))
+                          (sut/evaluate typo-token :authorizer allow-all :arity-check :loud))))
 
 ;; ---------------------------------------------------------------------------
 ;; Origin sets: a fact keeps every minimal origin set it was found with.
