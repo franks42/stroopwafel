@@ -799,6 +799,15 @@
   (t/is (= [] (sut/check-arity {:blocks [{:facts  [[:a 1] [:b 1 2]]
                                           :checks [{:id :any :query '[[?p 1]]}]}]}))))
 
+(t/deftest check-arity-only-counts-keyword-predicates
+  (t/testing "positional records led by a value (e.g. a signer's key id) are not predicate uses"
+    (let [token {:blocks [{:facts [["kid-1" 100 :capability "alice" :read]
+                                   ["kid-1" 200 :revocation "bob"]]}]}]
+      (t/is (= [] (sut/check-arity token)))
+      (t/is (true? (:valid? (sut/evaluate token :authorizer allow-all))))))
+  (t/testing "keyword predicates are still checked"
+    (t/is (= [:a] (map :predicate (sut/check-arity {:blocks [{:facts [[:a 1] [:a 1 2]]}]}))))))
+
 (t/deftest evaluate-denies-on-arity-mismatch-by-default
   (t/is (= {:valid? false
             :error  {:type :arity-mismatch :mismatches [typo-mismatch]}}

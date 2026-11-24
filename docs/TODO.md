@@ -27,11 +27,12 @@ From `docs/review-swival-inkling-2-mini.md` (revised 2026-11-23), in priority or
 - [x] Unknown keyword arguments to `evaluate` throw — a typo (`:authoriser`) silently dropped the authorizer and its deny policies; 0.15.0 (authorizer keys too: `:check` dropped checks)
 - [x] Release 0.15.0 — breaking: no policies denies (with a warning); unknown options and authorizer keys throw (tagged v0.15.0; Clojars deploy is Frank's)
 - [x] stroopwafel-pdp: pass the engine's `:warnings` through (it returns only `:allowed?`, `:error`, `:explain`), so its callers see `:no-policies`; review the `(or policies [])` fallback (`pdp/core.clj:173`, `spki/core.clj:326`) and tests that omit policies, which will now deny — separate repo, after 0.15.0 (on pdp branch `feat/stroopwafel-0.15`: dep 0.12.0 → 0.15.0, warnings passed through, `decide` options validated; fallback kept, it now denies; no test omitted policies)
-- [ ] stroopwafel-pdp: default `:test` alias can't resolve `signet 0.3.1` (not on Clojars or in `~/.m2`); only `-M:test:dev` (local checkouts) builds — deploy signet 0.3.1, or pin a published version
+- [x] stroopwafel-pdp: default `:test` alias can't resolve `signet 0.3.1` (not on Clojars or in `~/.m2`); only `-M:test:dev` (local checkouts) builds — deploy signet 0.3.1, or pin a published version (pinned signet 0.10.0, the latest on Clojars; tests pass)
 - [x] `:arity-check` defaults to `:error` — review 2; breaking, 0.16.0
 - [x] Graph: limit-exceeded / arity-mismatch error details on the decision node; end-to-end test with `:explain? :all` — review 2, suggestions 2 and 6
 - [x] `normalize-facts`: pass a pair through only when its second element is a vector — review 2, finding 1
 - [x] Docs: `arity-mismatches` location keys; README on treating warnings as errors — review 2, suggestions 3 and 8
 - [x] Oracle test on derivations: `:explain? :all` matches re-firing every rule — review 2, suggestion 4
-- [ ] stroopwafel-pdp: `decide` inherits the `:error` arity default (a policy set with a length typo now denies); release note, or expose `:arity-check` — after 0.16.0
+- [x] stroopwafel-pdp: `decide` inherits the `:error` arity default (a policy set with a length typo now denies); release note, or expose `:arity-check` — after 0.16.0 (it denied every templated decision: 5-term `:can` renamed `:can-constrained` in pdp; signer-led assertion facts fixed here in 0.16.1; release note in pdp's CHANGELOG)
+- [x] Arity check counts only keyword predicates — positional records led by a value (pdp's `[signer ts …]` assertion facts) were flagged as one predicate with several lengths; 0.16.1
 - [x] Bump to 0.13.0 after the arity fix — strict arity is a behaviour change that can reject tokens that pass today; `CHANGELOG.md` is kept current with each commit
