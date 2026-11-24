@@ -188,11 +188,15 @@
 
 (defn- normalize-facts
   "Normalize facts: bare facts become [#{0} fact] pairs.
-   Already-normalized pairs (vector of [set fact]) pass through."
+   Already-normalized pairs `[origin-set fact-vector]` pass through. A
+   bare fact starts with its predicate, never a set, so the two can't be
+   confused; requiring the second element to be a vector also keeps an
+   odd fact like `[#{0} :x]` from being taken for a pair."
   [facts]
   (into []
         (map (fn [f]
-               (if (and (vector? f) (= 2 (count f)) (set? (first f)))
+               (if (and (vector? f) (= 2 (count f))
+                        (set? (first f)) (vector? (second f)))
                  f
                  [#{0} f])))
         facts))
@@ -950,11 +954,19 @@
    always a typo (a reject check or deny policy that can never fire).
 
    Returns a vector, sorted by predicate, of
-   `{:predicate p :arities {length [location …]}}` where a location is
-   `{:block idx|:authorizer :in :facts|:rule-head|:rule-body|:check|:policy}`
-   plus the rule's, check's or policy's `:id` (or a policy's `:index`).
-   Patterns whose first element is a variable are skipped. Empty when
-   consistent."
+   `{:predicate p :arities {length [location …]}}`, each location listed
+   once. A location is a map:
+   |||
+   |:-|:-|
+   | `:block` | the block index, or `:authorizer`
+   | `:in`    | `:facts`, `:rule-head`, `:rule-body`, `:check` or `:policy`
+   | `:id`    | the rule's or check's `:id` (absent when it has none, and for `:facts`);
+   |          | a policy's `:id` when it has one
+   | `:index` | a policy without an `:id`: its position in `:policies`
+
+   For example `{:block 0 :in :rule-body :id :can}` or
+   `{:block :authorizer :in :policy :index 1}`. Patterns whose first
+   element is a variable are skipped. Empty when consistent."
   [blocks authorizer]
   (let [uses
         (for [[block src] (concat (map-indexed vector blocks)
@@ -1045,17 +1057,18 @@
    `:check-failed`, `:policy`, `:no-matching-policy`, `:no-policies`
    or `:limit-exceeded` (then with `:error` instead of checks).
    | `:error`   | when a limit was reached: `{:type :limit-exceeded :limit :max :facts :iterations}`,
-   |            | or with `:arity-check :error`: `{:type :arity-mismatch :mismatches [...]}`
-   | `:warnings`| `{:type :arity-mismatch …}` with `:arity-check :warn` (the default), when
+   |            | or on a length mismatch (`:arity-check :error`, the default): `{:type :arity-mismatch :mismatches [...]}`
+   | `:warnings`| `{:type :arity-mismatch …}` with `:arity-check :warn`, when
    |            | patterns disagree on length; `{:type :no-policies}` when there are no policies
 
-   `:arity-check` (`:warn` default, `:error`, `:off`) checks that every use of a
+   `:arity-check` (`:error` default, `:warn`, `:off`) checks that every use of a
    predicate — facts, rule heads and bodies, checks, policies — has the same
    length (see `arity-mismatches`). A mismatched pattern never matches, so a
-   reject check or deny policy with a typo silently never fires. `:warn` adds
-   `:warnings` and leaves the decision alone; `:error` denies before evaluating."
+   reject check or deny policy with a typo silently never fires. `:error`
+   denies before evaluating; `:warn` only adds `:warnings` and leaves the
+   decision alone."
   [token & {:keys [explain? authorizer arity-check]
-            :or   {arity-check :warn}
+            :or   {arity-check :error}
             :as   opts}]
   (check-keys "eval-token options" opts
               #{:explain? :authorizer :trusted-block-indices :limits :arity-check})
