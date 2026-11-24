@@ -3,7 +3,7 @@
 All notable changes to stroopwafel. Each entry reflects committed work.
 History before 0.13.0 is in `context.md` (## History).
 
-## Unreleased (0.16.0)
+## 0.16.0 — 2026-11-24
 
 From the second review (`docs/review2-swival-inkling-2-mini.md`).
 
