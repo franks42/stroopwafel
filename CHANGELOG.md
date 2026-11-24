@@ -3,6 +3,28 @@
 All notable changes to stroopwafel. Each entry reflects committed work.
 History before 0.13.0 is in `context.md` (## History).
 
+## Unreleased
+
+### Performance
+
+- **Semi-naive evaluation.** A block's later turns in the fixpoint match
+  only rule bodies that use a (fact, origin set) entry inserted since its
+  previous turn; a block with nothing new is skipped. Each round still
+  derives exactly what re-firing every rule would, so stores, decisions,
+  round counts and limits are unchanged, and so is every derivation
+  `:explain? :all` records. `:explain? true` may keep a different (equally
+  valid) first derivation of a fact.
+- **Predicate index.** A pattern only scans facts with its predicate and
+  length.
+- Transitive closure over 50 edges: 6.4 s → 0.1 s; a 400-step chain:
+  8.6 s → 0.17 s (JVM). The babashka test suite runs in under a second.
+
+### Tests
+
+- `fixpoint-matches-naive-oracle`: the engine's store against a naive
+  fixpoint written in the test, on 400 random seeded programs (multiple
+  blocks, recursion, third-party scopes).
+
 ## 0.14.1 — 2026-11-23
 
 ### Security

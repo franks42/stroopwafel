@@ -197,6 +197,40 @@
                  [#{0} f])))
         facts))
 
+(defn- fact-source
+  "Wraps `[origin fact]` pairs for `join`, with a lazily built index by
+   predicate and length."
+  [pairs]
+  {:pairs pairs
+   :index (delay (group-by (fn [[_ fact]] [(first fact) (count fact)]) pairs))})
+
+(defn- candidates
+  "The pairs of `src` that `pattern` can unify with: those with the same
+   predicate and length, when the predicate is a constant that compares by
+   `=`. A variable or byte-array predicate scans every pair."
+  [src pattern]
+  (let [pred (first pattern)]
+    (if (or (variable? pred) (bytes? pred))
+      (:pairs src)
+      (get @(:index src) [pred (count pattern)]))))
+
+(defn- join
+  "Matches `body` pattern by pattern, pattern i against the pairs of the i-th
+   of `sources` (see `fact-source`). Returns a lazy sequence of `{:env :proof
+   :origin}` states, as `eval-body` describes."
+  [body sources]
+  (reduce
+   (fn [states [pattern src]]
+     (for [state states
+           [fact-origin fact] (candidates src pattern)
+           :let  [result (unify pattern fact fact-origin (:env state))]
+           :when result]
+       {:env    (:env result)
+        :proof  (into (:proof state) (:proof result))
+        :origin (set/union (:origin state) (:origin result))}))
+   [{:env {} :proof [] :origin #{}}]
+   (map vector body sources)))
+
 (defn eval-body
   "Evaluates a rule or query body against a set of facts.
 
@@ -214,21 +248,8 @@
    | `:proof`  | all facts that contributed to satisfying the body
    | `:origin` | accumulated origin set (union of matched fact origins)"
   [body facts]
-  (let [origin-facts (normalize-facts facts)]
-    (reduce
-     (fn [states pattern]
-       (for [state states
-             [fact-origin fact] origin-facts
-             :let  [result (unify pattern fact fact-origin (:env state))]
-             :when result
-             :let  [merged-proof  (into (:proof state) (:proof result))
-                    merged-origin (set/union (or (:origin state) #{})
-                                             (:origin result))]]
-         {:env    (:env result)
-          :proof  merged-proof
-          :origin merged-origin}))
-     [{:env {} :proof [] :origin #{}}]
-     body)))
+  (let [src (fact-source (normalize-facts facts))]
+    (join body (repeat src))))
 
 ;;; ---- Expression evaluator ----
 
@@ -347,6 +368,34 @@
     (when-not (some #{::unbound} result)
       result)))
 
+(defn- fire-states
+  "The derivations of `rule` from body-match `states` (see `fire-rule`)."
+  [{:keys [id head] guards :when let-bindings :let} states rule-block-idx]
+  (keep (fn [{:keys [env proof origin]}]
+          (let [env (eval-let let-bindings env)]
+            (when (eval-when guards env)
+              (when-let [fact (instantiate head env)]
+                {:fact   fact
+                 :origin (if rule-block-idx
+                           (conj (or origin #{}) rule-block-idx)
+                           :derived)
+                 :rule   id
+                 :env    env
+                 :proof  proof}))))
+        states))
+
+(defn- delta-states
+  "Semi-naive body matches of `rule`: those using at least one pair from
+   `delta`, each found once. Pass i matches pattern i against `delta`,
+   earlier patterns against `old` (pairs not in delta) and later ones against
+   `full`. A rule with an empty body has no delta matches; it fired in its
+   block's first, full pass."
+  [{:keys [body]} old delta full]
+  (let [n (count body)]
+    (mapcat (fn [i]
+              (join body (concat (repeat i old) [delta] (repeat (- n i 1) full))))
+            (range n))))
+
 (defn fire-rule
   "Applies a rule to a set of facts and produces derived facts
    along with full explanation metadata.
@@ -367,19 +416,8 @@
    | `:proof`  | evidence from the rule body"
   ([rule facts]
    (fire-rule rule facts nil))
-  ([{:keys [id head body] guards :when let-bindings :let} facts rule-block-idx]
-   (keep (fn [{:keys [env proof origin]}]
-           (let [env (eval-let let-bindings env)]
-             (when (eval-when guards env)
-               (when-let [fact (instantiate head env)]
-                 {:fact   fact
-                  :origin (if rule-block-idx
-                            (conj (or origin #{}) rule-block-idx)
-                            :derived)
-                  :rule   id
-                  :env    env
-                  :proof  proof}))))
-         (eval-body body facts))))
+  ([rule facts rule-block-idx]
+   (fire-states rule (eval-body (:body rule) facts) rule-block-idx)))
 
 (defn apply-rules
   "Applies rules to the final fact set and produces derived facts
@@ -433,34 +471,67 @@
                                   (assoc-in [:derivations fact] (conj ds d))
                                   (update :count inc)))))
 
+(defn- block-states
+  "Body matches for each of `rules` in one block's turn, as `[rule states]`.
+
+   `pos` is where the insertion `log` stood at this block's previous turn
+   (nil on its first turn). The first turn matches every rule against every
+   visible pair. Later turns are semi-naive: only matches that use a pair
+   inserted since `pos` and still kept (`delta`) — any other match was
+   already found in an earlier turn. With no delta the block derives nothing
+   new and is skipped."
+  [rules store log pos trusted]
+  (let [visible (facts-for-scope store trusted)]
+    (if (nil? pos)
+      (let [full (fact-source visible)]
+        (map (fn [rule] [rule (join (:body rule) (repeat full))]) rules))
+      (let [delta (filterv (fn [[origin fact]]
+                             (and (visible? origin trusted)
+                                  (contains? (get store fact) origin)))
+                           (subvec log pos))]
+        (when (seq delta)
+          (let [in-delta (set delta)
+                old      (fact-source (into [] (remove in-delta) visible))
+                new      (fact-source delta)
+                full     (fact-source visible)]
+            (map (fn [rule] [rule (delta-states rule old new full)]) rules)))))))
+
 (defn- derive-round
-  "One round of the fixpoint: fires every block's rules in order, threading
-   the store so later blocks see earlier blocks' facts from this round.
-   A derivation is inserted only when it adds an origin set (see
+  "One round of the fixpoint: each block's turn in order, then the
+   authorizer's, threading the store so later blocks see earlier blocks'
+   facts from this round. A turn sees the store as it was when the turn
+   began. A derivation is inserted only when it adds an origin set (see
    `insert-fact`), so the same fact can be found again with an origin that
    makes it visible to more scopes.
 
+   Evaluation is semi-naive (see `block-states`): `log` records every
+   inserted `[origin fact]` pair and `pos` where it stood at each block's
+   last turn (keyed by the block's position in `indexed-rules`). Each round
+   derives exactly what re-firing every rule over every visible fact would.
+
    `ex` is explain state (nil when explain is off). In `:first` mode it
-   records each derivation that added an origin set. In `:all`
-   mode it records every distinct derivation, including of facts already
-   in the store; since each round re-fires every rule over every visible
-   fact, the final round finds them all."
-  [indexed-rules store ex authorizer-scope]
+   records each derivation that added an origin set. In `:all` mode it
+   records every distinct derivation, including of facts already in the
+   store; each match of a rule body is found in some turn, so over all
+   rounds that is every derivation."
+  [indexed-rules state authorizer-scope]
   (reduce
-   (fn [acc [block-idx rules]]
+   (fn [acc [k [block-idx rules]]]
      (let [trusted (if (and (= block-idx :authorizer) authorizer-scope)
                      authorizer-scope
                      (trusted-origins block-idx))
-           visible (facts-for-scope (:store acc) trusted)]
+           log     (:log acc)
+           matches (block-states rules (:store acc) log (get-in acc [:pos k]) trusted)]
        (reduce
-        (fn [acc rule]
+        (fn [acc [rule states]]
           (reduce
            (fn [acc {:keys [fact origin env proof] rule-id :rule}]
              (let [new? (adds-origin? (:store acc) fact origin)
                    ex   (:ex acc)]
                (cond-> acc
                  new?
-                 (update :store insert-fact fact origin)
+                 (-> (update :store insert-fact fact origin)
+                     (update :log conj [origin fact]))
 
                  (and ex (or new? (= :all (:mode ex))))
                  (update :ex record-derivation fact
@@ -470,10 +541,11 @@
                           :env    env
                           :proof  (mapv :fact proof)}))))
            acc
-           (fire-rule rule visible block-idx)))
-        acc rules)))
-   {:store store :ex ex}
-   indexed-rules))
+           (fire-states rule states block-idx)))
+        (assoc-in acc [:pos k] (count log))
+        matches)))
+   state
+   (map-indexed vector indexed-rules)))
 
 (defn fixpoint
   "Applies rules per-block with scope filtering, running to fixpoint.
@@ -505,15 +577,18 @@
    over a missing fact would pass, so it must never be evaluated."
   [indexed-rules store & {:keys [authorizer-scope limits explain?]}]
   (let [{:keys [max-iterations max-facts] :as limits} (validate-limits limits)]
-    (loop [store     store
-           ex        (when explain?
-                       {:mode        (if (= :all explain?) :all :first)
-                        :derivations {}
-                        :count       0
-                        :max         (:max-derivations limits)})
+    (loop [{:keys [store] :as state}
+           {:store store
+            :log   []
+            :pos   {}
+            :ex    (when explain?
+                     {:mode        (if (= :all explain?) :all :first)
+                      :derivations {}
+                      :count       0
+                      :max         (:max-derivations limits)})}
            iteration 0]
-      (let [{new-store :store ex :ex}
-            (derive-round indexed-rules store ex authorizer-scope)
+      (let [{new-store :store ex :ex :as state}
+            (derive-round indexed-rules state authorizer-scope)
             rounds (inc iteration)]
         (cond
           ;; Not a count comparison: a smaller origin set replacing a kept
@@ -531,7 +606,7 @@
           (throw (limit-exceeded :max-iterations limits new-store rounds))
 
           :else
-          (recur new-store ex rounds))))))
+          (recur state rounds))))))
 
 (defn apply-rules-scoped
   "Like `fixpoint`, but returns only the resulting fact store.
